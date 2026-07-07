@@ -146,6 +146,25 @@ export async function stopDjSession(sessionId: string, userId: string) {
   return session;
 }
 
+export async function clearDjSession(sessionId: string, userId: string) {
+  const ownedSession = await requireOwnedSession(sessionId, userId);
+
+  await db.dJSession.delete({
+    where: {
+      id: ownedSession.id
+    }
+  });
+
+  // The session row is gone, so the audit event cannot reference it.
+  await recordAuditEvent({
+    type: "session.cleared",
+    summary: `Cleared session ${ownedSession.name} to start a new one`,
+    userId
+  });
+
+  return ownedSession;
+}
+
 export async function setSelectionPause(sessionId: string, userId: string, paused: boolean) {
   const ownedSession = await requireOwnedSession(sessionId, userId);
 

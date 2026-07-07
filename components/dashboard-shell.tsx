@@ -22,6 +22,7 @@ export function DashboardShell({
   const [controlFeedback, setControlFeedback] = useState<string | null>(null);
   const [showWindowFeedback, setShowWindowFeedback] = useState<string | null>(null);
   const [showUrlDisplay, setShowUrlDisplay] = useState("");
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const deferredSnapshot = useDeferredValue(snapshot);
   const openAiStatus = initialOpenAiStatus;
 
@@ -65,6 +66,49 @@ export function DashboardShell({
   useEffect(() => {
     setShowUrlDisplay(resolveAbsoluteUrl(showLink));
   }, [showLink]);
+
+  useEffect(() => {
+    if (!confirmingClear) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setConfirmingClear(false);
+    }, 6000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [confirmingClear]);
+
+  async function clearAndStartNewSession() {
+    if (!confirmingClear) {
+      setConfirmingClear(true);
+      setControlFeedback(
+        "Clearing deletes this session, its crowd queue, and its render history. Click the button again to confirm."
+      );
+      return;
+    }
+
+    setConfirmingClear(false);
+    setControlFeedback(null);
+    setWorkingAction("clear-session");
+
+    try {
+      const response = await fetch(`/api/sessions/${session.id}`, {
+        method: "DELETE"
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not clear the current session.");
+      }
+
+      window.location.href = "/dashboard/new";
+    } catch (error) {
+      setControlFeedback(describeDashboardRequestError(error, "Clearing the session"));
+      setWorkingAction(null);
+    }
+  }
 
   async function runControlAction(action: string) {
     if (action === "skip-next" && !snapshot.session.playbackState?.nextAsset) {
@@ -185,6 +229,21 @@ export function DashboardShell({
           <Link href={showLink} className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10">
             Fullscreen Show
           </Link>
+          <button
+            onClick={() => void clearAndStartNewSession()}
+            disabled={workingAction === "clear-session"}
+            className={`rounded-full border px-5 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${
+              confirmingClear
+                ? "border-ember/60 bg-ember/15 text-ember hover:bg-ember/25"
+                : "border-white/10 text-white/80 hover:bg-white/10"
+            }`}
+          >
+            {workingAction === "clear-session"
+              ? "Clearing..."
+              : confirmingClear
+                ? "Confirm: Delete & Start New"
+                : "Clear & New Session"}
+          </button>
           <button
             onClick={() => void runControlAction("logout")}
             className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10"
