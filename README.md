@@ -25,7 +25,8 @@ DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a v
 - OpenAI Sora seed/remix orchestration
 - SSE-driven realtime updates for the dashboard and show screen
 - Double-buffer video crossfade on the fullscreen playback route
-- Local file storage for downloaded MP4 assets
+- Supabase Postgres persistence for users, sessions, queue state, and render metadata
+- Supabase Storage persistence for downloaded MP4 assets
 - Demo-mode fallback if `OPENAI_API_KEY` is missing
 
 ## Important Product Constraint
@@ -35,8 +36,8 @@ Sora video generation is asynchronous. This app is built so the experience feels
 ## Local Setup
 
 1. Install dependencies.
-2. Copy `.env.example` to `.env`.
-3. Run the Prisma migration.
+2. Copy `.env.example` to `.env` and point it at a Supabase Postgres project.
+3. Run the Prisma migration against that database.
 4. Seed the demo user and starter session.
 5. Start the app.
 
@@ -97,6 +98,18 @@ The app reads OpenAI credentials from environment variables only. The dashboard 
 
 If `OPENAI_API_KEY` is absent, the app uses a demo video URL so the playback and crossfade flow can still be exercised locally.
 
+## Vercel Deployment
+
+The production app is designed for Vercel's serverless runtime. Configure the variables from `.env.example` in the Vercel Production environment, with these production-specific values:
+
+- Use Supabase's pooled connection string for `DATABASE_URL` and its direct connection string for `DIRECT_URL`.
+- Set `NEXT_PUBLIC_APP_URL` to the public production origin, such as `https://dream-sequence.vercel.app`.
+- Use a private server-side `SUPABASE_SERVICE_ROLE_KEY`; never expose it with a `NEXT_PUBLIC_` prefix.
+- Create the `SUPABASE_STORAGE_BUCKET` bucket before starting a real Sora render.
+- Add the three `TWILIO_*` variables only when SMS intake is enabled. The web audience form works without them.
+
+The live snapshot endpoint intentionally ends each serverless response before Vercel's function timeout. Browser `EventSource` clients reconnect automatically, preserving realtime dashboard and show updates without accumulating runtime timeout errors.
+
 ## Core Routes
 
 - `/login`
@@ -132,8 +145,8 @@ If `OPENAI_API_KEY` is absent, the app uses a demo video URL so the playback and
 
 ## Notes About Infrastructure Choices
 
-- This MVP uses SQLite locally for fast setup even though a future deployment would likely move to Postgres.
-- Downloaded video files are stored under `storage/videos/`.
+- Supabase Postgres is the source of truth in both development and production; the app does not rely on a serverless filesystem.
+- Rendered videos are uploaded to Supabase Storage and served from the configured public bucket.
 - The app supports OpenAI video webhooks, but it also includes a manual reconciliation endpoint so local development does not depend on webhook delivery.
 
 ## Testing

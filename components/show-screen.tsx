@@ -1,7 +1,8 @@
 "use client";
 
-import { startTransition, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SessionSnapshot } from "@/lib/snapshot";
+import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 
 type ShowScreenProps = {
   initialSnapshot: NonNullable<SessionSnapshot>;
@@ -9,7 +10,7 @@ type ShowScreenProps = {
 };
 
 export function ShowScreen({ initialSnapshot, openAiConfigured }: ShowScreenProps) {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const snapshot = useSessionSnapshot(initialSnapshot);
   const [fadeNext, setFadeNext] = useState(false);
   const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
   const nextVideoRef = useRef<HTMLVideoElement>(null);
@@ -21,20 +22,6 @@ export function ShowScreen({ initialSnapshot, openAiConfigured }: ShowScreenProp
   const currentAssetUrl = resolvePlaybackUrl(currentAsset?.publicUrl ?? null);
   const nextAssetUrl = resolvePlaybackUrl(nextAsset?.publicUrl ?? null);
   const shouldRenderNext = Boolean(nextAssetUrl);
-
-  useEffect(() => {
-    const stream = new EventSource(`/api/sessions/${session.id}/stream`);
-    stream.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as NonNullable<SessionSnapshot>;
-      startTransition(() => {
-        setSnapshot(payload);
-      });
-    };
-
-    return () => {
-      stream.close();
-    };
-  }, [session.id]);
 
   useEffect(() => {
     if (!nextAsset?.id || nextAsset.id === handledNextAssetId) {

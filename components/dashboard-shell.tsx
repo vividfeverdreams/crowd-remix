@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
 import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
 import type { SessionSnapshot } from "@/lib/snapshot";
+import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { formatRelativeTime } from "@/lib/utils";
 
 type DashboardShellProps = {
@@ -17,7 +18,7 @@ export function DashboardShell({
   currentUserName,
   initialOpenAiStatus
 }: DashboardShellProps) {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const snapshot = useSessionSnapshot(initialSnapshot);
   const [workingAction, setWorkingAction] = useState<string | null>(null);
   const [controlFeedback, setControlFeedback] = useState<string | null>(null);
   const [showWindowFeedback, setShowWindowFeedback] = useState<string | null>(null);
@@ -31,21 +32,6 @@ export function DashboardShell({
   const publicLink = `/r/${session.code}`;
   const showLink = `/show/${session.id}`;
   const canStartSession = session.status !== "live";
-
-  useEffect(() => {
-    const stream = new EventSource(`/api/sessions/${session.id}/stream`);
-
-    stream.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as NonNullable<SessionSnapshot>;
-      startTransition(() => {
-        setSnapshot(payload);
-      });
-    };
-
-    return () => {
-      stream.close();
-    };
-  }, [session.id]);
 
   useEffect(() => {
     if (!deferredSnapshot.queueHealth.waitingOnRender) {

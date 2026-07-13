@@ -1,8 +1,5 @@
-const defaultDatabasePath = "file:./dev.db";
-
 export const env = {
   appUrl: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-  databaseUrl: process.env.DATABASE_URL ?? defaultDatabasePath,
   authSecret: process.env.AUTH_SECRET ?? "dev-secret-change-me",
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiTextModel: process.env.OPENAI_TEXT_MODEL ?? "gpt-5.4-mini",

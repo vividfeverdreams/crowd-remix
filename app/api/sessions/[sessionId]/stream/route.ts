@@ -2,6 +2,10 @@ import { getSessionSnapshot } from "@/lib/snapshot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const snapshotIntervalMs = 3000;
+const streamLifetimeMs = 50000;
 
 type StreamRouteProps = {
   params: Promise<{
@@ -9,45 +13,91 @@ type StreamRouteProps = {
   }>;
 };
 
-export async function GET(_request: Request, { params }: StreamRouteProps) {
+export async function GET(request: Request, { params }: StreamRouteProps) {
   const { sessionId } = await params;
   const encoder = new TextEncoder();
   let interval: ReturnType<typeof setInterval> | undefined;
+  let lifetime: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+  let pushing = false;
+
+  const clearTimers = () => {
+    if (interval) {
+      clearInterval(interval);
+      interval = undefined;
+    }
+
+    if (lifetime) {
+      clearTimeout(lifetime);
+      lifetime = undefined;
+    }
+  };
 
   const stream = new ReadableStream({
     async start(controller) {
-      let closed = false;
-
-      const pushSnapshot = async () => {
+      const close = () => {
         if (closed) {
           return;
         }
 
-        const snapshot = await getSessionSnapshot(sessionId);
+        closed = true;
+        clearTimers();
+        controller.close();
+      };
 
-        if (!snapshot) {
-          if (interval) {
-            clearInterval(interval);
-          }
-          controller.enqueue(encoder.encode("event: close\ndata: {}\n\n"));
-          controller.close();
-          closed = true;
+      const pushSnapshot = async () => {
+        if (closed || pushing) {
           return;
         }
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(snapshot)}\n\n`));
+        pushing = true;
+
+        try {
+          const snapshot = await getSessionSnapshot(sessionId);
+
+          if (closed) {
+            return;
+          }
+
+          if (!snapshot) {
+            controller.enqueue(encoder.encode("event: close\ndata: {}\n\n"));
+            close();
+            return;
+          }
+
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(snapshot)}\n\n`));
+        } catch (error) {
+          clearTimers();
+          closed = true;
+          controller.error(error);
+        } finally {
+          pushing = false;
+        }
       };
 
+      request.signal.addEventListener("abort", close, {
+        once: true
+      });
+
+      controller.enqueue(encoder.encode("retry: 1000\n\n"));
       await pushSnapshot();
+
+      if (closed) {
+        return;
+      }
 
       interval = setInterval(() => {
         void pushSnapshot();
-      }, 3000);
+      }, snapshotIntervalMs);
+
+      // Vercel terminates long-lived functions at their duration limit. End the
+      // response first so EventSource reconnects cleanly instead of producing a
+      // runtime timeout every five minutes.
+      lifetime = setTimeout(close, streamLifetimeMs);
     },
     cancel() {
-      if (interval) {
-        clearInterval(interval);
-      }
+      closed = true;
+      clearTimers();
       return undefined;
     }
   });
@@ -56,7 +106,8 @@ export async function GET(_request: Request, { params }: StreamRouteProps) {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive"
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
     }
   });
 }
