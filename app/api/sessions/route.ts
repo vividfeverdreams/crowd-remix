@@ -23,7 +23,8 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json(
       {
-        error: "Session details are incomplete."
+        error: parsed.error.issues[0]?.message ?? "Check the session details and try again.",
+        fieldErrors: parsed.error.flatten().fieldErrors
       },
       {
         status: 400
@@ -32,8 +33,7 @@ export async function POST(request: Request) {
   }
 
   const session = await createDjSession(user.id, {
-    ...parsed.data,
-    imageReferenceUrl: parsed.data.imageReferenceUrl || undefined
+    ...parsed.data
   });
 
   return NextResponse.json({
