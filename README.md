@@ -141,7 +141,19 @@ The live snapshot endpoint intentionally ends each serverless response before Ve
 5. If no render is active and no next asset is waiting, the best approved prompt is selected.
 6. The app starts a seed render or remix render with Sora.
 7. Once the render is completed, the output becomes the next queued loop.
-8. The fullscreen show view crossfades and then promotes that asset to live.
+8. With audio sync disconnected, the fullscreen show keeps the existing automatic crossfade behavior.
+9. With audio sync connected, the ready loop waits for a detected build or section change, or for the operator to click **Take next remix now**.
+
+## Audio-Reactive Show Output
+
+Open **Pop Out Show** or **Fullscreen Show** from the DJ dashboard, then use the Audio Reactive Engine panel in that show window:
+
+1. Route a mixer, audio interface, or virtual loopback output into an input device visible to the browser.
+2. Click **Connect input** and allow microphone/audio-input access for the site.
+3. Select the desired input and adjust **VFX intensity**.
+4. Leave **Take next remix on musical cue** enabled to crossfade ready Sora remixes on detected builds and strong returns after quiet passages.
+
+The input is analyzed locally with the Web Audio API and is never connected to browser playback, which avoids monitoring feedback. The embedded dashboard monitor is intentionally passive so it cannot race the projection window for a transition.
 
 ## Notes About Infrastructure Choices
 

@@ -310,14 +310,14 @@ export function DashboardShell({
             <div className="border-b border-white/10 px-6 py-5">
               <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Live Monitor</p>
               <p className="mt-3 text-sm text-white/68">
-                Keep an eye on the show here while you test controls. This avoids the extra-tab weirdness from the in-app browser.
+                Keep an eye on the show here while you test controls. This monitor is passive; the popped-out projection view owns audio sync and transitions.
               </p>
             </div>
 
             <div className="aspect-video bg-black">
               <iframe
                 key={`${playback?.currentAsset?.id ?? "holding"}-${playback?.nextAsset?.id ?? "none"}`}
-                src={showLink}
+                src={`${showLink}?monitor=1`}
                 title="Live show monitor"
                 className="h-full w-full border-0"
                 allow="autoplay; fullscreen"

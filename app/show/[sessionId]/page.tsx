@@ -9,10 +9,13 @@ type ShowPageProps = {
   params: Promise<{
     sessionId: string;
   }>;
+  searchParams: Promise<{
+    monitor?: string;
+  }>;
 };
 
-export default async function ShowPage({ params }: ShowPageProps) {
-  const { sessionId } = await params;
+export default async function ShowPage({ params, searchParams }: ShowPageProps) {
+  const [{ sessionId }, { monitor }] = await Promise.all([params, searchParams]);
   const snapshot = await getSessionSnapshot(sessionId);
 
   if (!snapshot) {
@@ -21,5 +24,5 @@ export default async function ShowPage({ params }: ShowPageProps) {
 
   const openAiStatus = await getOpenAiConnectionStatusForSession(sessionId);
 
-  return <ShowScreen initialSnapshot={snapshot} openAiConfigured={openAiStatus.configured} />;
+  return <ShowScreen initialSnapshot={snapshot} isMonitor={monitor === "1"} openAiConfigured={openAiStatus.configured} />;
 }
