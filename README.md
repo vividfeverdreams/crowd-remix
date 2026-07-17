@@ -146,14 +146,14 @@ The live snapshot endpoint intentionally ends each serverless response before Ve
 
 ## Audio-Reactive Show Output
 
-Open **Pop Out Show** or **Fullscreen Show** from the DJ dashboard, then use the Audio Reactive Engine panel in that show window:
+Use the **Audio Reactive Engine** panel directly on the DJ dashboard, then open **Pop Out Show** or **Fullscreen Show** as the clean projection output:
 
 1. Route a mixer, audio interface, or virtual loopback output into an input device visible to the browser.
 2. Click **Connect input** and allow microphone/audio-input access for the site.
 3. Select the desired input and adjust **VFX intensity**.
 4. Leave **Take next remix on musical cue** enabled to crossfade ready Sora remixes on detected builds and strong returns after quiet passages.
 
-The input is analyzed locally with the Web Audio API and is never connected to browser playback, which avoids monitoring feedback. The embedded dashboard monitor is intentionally passive so it cannot race the projection window for a transition.
+The input is analyzed locally with the Web Audio API and is never connected to browser playback, which avoids monitoring feedback. Keep the dashboard open on the same browser and computer as the show window; it sends only reactive levels and transition cues to the visual output. The projection window contains no operator controls or status text.
 
 ## Notes About Infrastructure Choices
 

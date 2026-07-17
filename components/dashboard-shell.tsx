@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useDeferredValue, useEffect, useState } from "react";
+import { DashboardAudioSync } from "@/components/dashboard-audio-sync";
 import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
@@ -212,7 +213,12 @@ export function DashboardShell({
           >
             Pop Out Show
           </button>
-          <Link href={showLink} className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10">
+          <Link
+            href={showLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10"
+          >
             Fullscreen Show
           </Link>
           <button
@@ -284,6 +290,13 @@ export function DashboardShell({
         </section>
       ) : null}
 
+      <section className="mt-8">
+        <DashboardAudioSync
+          sessionId={session.id}
+          nextReady={Boolean(playback?.nextAsset?.id && playback.nextAsset.publicUrl)}
+        />
+      </section>
+
       <section className="mt-8 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
         <div className="space-y-6">
           <div className="panel overflow-hidden">
@@ -310,7 +323,7 @@ export function DashboardShell({
             <div className="border-b border-white/10 px-6 py-5">
               <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Live Monitor</p>
               <p className="mt-3 text-sm text-white/68">
-                Keep an eye on the show here while you test controls. This monitor is passive; the popped-out projection view owns audio sync and transitions.
+                This visual-only preview mirrors the audio-reactive effects. All input, cue, and transition controls stay on this dashboard.
               </p>
             </div>
 
@@ -473,7 +486,7 @@ export function DashboardShell({
                 <p className="mt-2 break-all font-mono text-xs text-white/60">{showUrlDisplay || showLink}</p>
               </div>
               <LinkCard label="Audience Remix Form" href={publicLink} />
-              <LinkCard label="Fullscreen Projection View" href={showLink} />
+              <LinkCard label="Fullscreen Projection View" href={showLink} newTab />
             </div>
           </div>
 
@@ -566,9 +579,14 @@ function ControlButton({
   );
 }
 
-function LinkCard({ label, href }: { label: string; href: string }) {
+function LinkCard({ label, href, newTab = false }: { label: string; href: string; newTab?: boolean }) {
   return (
-    <Link href={href} className="block rounded-4xl border border-white/10 bg-black/20 p-4 transition hover:border-plasma/40">
+    <Link
+      href={href}
+      target={newTab ? "_blank" : undefined}
+      rel={newTab ? "noopener noreferrer" : undefined}
+      className="block rounded-4xl border border-white/10 bg-black/20 p-4 transition hover:border-plasma/40"
+    >
       <p className="text-sm font-semibold text-white">{label}</p>
       <p className="mt-2 text-sm text-white/60">{href}</p>
     </Link>
