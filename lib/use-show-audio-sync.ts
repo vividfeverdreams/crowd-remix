@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { getAudioSyncChannelName, isAudioSyncMessage } from "@/lib/audio-sync-channel";
+import { defaultAudioReactiveEffect, type AudioReactiveEffectId } from "@/lib/audio-reactive-effects";
 import type { AudioCueKind } from "@/lib/audio-reactivity";
 import type { AudioReactiveLevels } from "@/lib/use-audio-reactive-input";
 
@@ -27,6 +28,7 @@ export function useShowAudioSync(sessionId: string) {
   const [connected, setConnected] = useState(false);
   const [intensity, setIntensity] = useState(0.85);
   const [autoTakeOnCue, setAutoTakeOnCue] = useState(true);
+  const [effect, setEffect] = useState<AudioReactiveEffectId>(defaultAudioReactiveEffect);
   const [lastCue, setLastCue] = useState<RemoteAudioCue | null>(null);
   const [manualTakeRequestId, setManualTakeRequestId] = useState<string | null>(null);
 
@@ -50,6 +52,7 @@ export function useShowAudioSync(sessionId: string) {
         setConnected(true);
         setIntensity(message.intensity);
         setAutoTakeOnCue(message.autoTakeOnCue);
+        setEffect(message.effect);
         return;
       }
 
@@ -57,6 +60,7 @@ export function useShowAudioSync(sessionId: string) {
         setConnected(message.connected);
         setIntensity(message.intensity);
         setAutoTakeOnCue(message.autoTakeOnCue);
+        setEffect(message.effect);
 
         if (!message.connected) {
           levelsRef.current = { ...silentLevels };
@@ -94,6 +98,7 @@ export function useShowAudioSync(sessionId: string) {
   return {
     autoTakeOnCue,
     connected,
+    effect,
     intensity,
     lastCue,
     levelsRef: levelsRef as MutableRefObject<AudioReactiveLevels>,

@@ -1,7 +1,8 @@
 import type { AudioCueKind } from "@/lib/audio-reactivity";
+import { isAudioReactiveEffectId, type AudioReactiveEffectId } from "@/lib/audio-reactive-effects";
 import type { AudioReactiveLevels } from "@/lib/use-audio-reactive-input";
 
-const protocolVersion = 1;
+const protocolVersion = 2;
 
 type AudioSyncBaseMessage = {
   version: typeof protocolVersion;
@@ -15,6 +16,7 @@ export type AudioSyncStateMessage = AudioSyncBaseMessage & {
   connected: boolean;
   intensity: number;
   autoTakeOnCue: boolean;
+  effect: AudioReactiveEffectId;
 };
 
 export type AudioSyncFrameMessage = AudioSyncBaseMessage & {
@@ -22,6 +24,7 @@ export type AudioSyncFrameMessage = AudioSyncBaseMessage & {
   connected: true;
   intensity: number;
   autoTakeOnCue: boolean;
+  effect: AudioReactiveEffectId;
   levels: AudioReactiveLevels;
 };
 
@@ -73,7 +76,8 @@ export function isAudioSyncMessage(value: unknown): value is AudioSyncMessage {
     return (
       typeof value.connected === "boolean" &&
       isFiniteNumber(value.intensity) &&
-      typeof value.autoTakeOnCue === "boolean"
+      typeof value.autoTakeOnCue === "boolean" &&
+      isAudioReactiveEffectId(value.effect)
     );
   }
 
@@ -82,6 +86,7 @@ export function isAudioSyncMessage(value: unknown): value is AudioSyncMessage {
       value.connected === true &&
       isFiniteNumber(value.intensity) &&
       typeof value.autoTakeOnCue === "boolean" &&
+      isAudioReactiveEffectId(value.effect) &&
       isAudioLevels(value.levels)
     );
   }

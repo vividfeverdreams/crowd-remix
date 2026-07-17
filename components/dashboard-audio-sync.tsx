@@ -2,6 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AudioSyncControls } from "@/components/audio-sync-controls";
+import {
+  audioEffectCycleIntervalMs,
+  defaultAudioReactiveEffect,
+  getNextAudioReactiveEffect,
+  type AudioReactiveEffectId
+} from "@/lib/audio-reactive-effects";
 import { useAudioReactiveInput } from "@/lib/use-audio-reactive-input";
 import { useDashboardAudioSync } from "@/lib/use-dashboard-audio-sync";
 
@@ -13,6 +19,8 @@ type DashboardAudioSyncProps = {
 export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncProps) {
   const audio = useAudioReactiveInput();
   const [autoTakeOnCue, setAutoTakeOnCue] = useState(true);
+  const [autoCycleEffects, setAutoCycleEffects] = useState(false);
+  const [selectedEffect, setSelectedEffect] = useState<AudioReactiveEffectId>(defaultAudioReactiveEffect);
   const [vfxIntensity, setVfxIntensity] = useState(0.85);
   const [transitionFeedback, setTransitionFeedback] = useState<string | null>(null);
   const [takeSignalInFlight, setTakeSignalInFlight] = useState(false);
@@ -23,9 +31,24 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
     connected: audio.status === "connected",
     intensity: vfxIntensity,
     autoTakeOnCue,
+    effect: selectedEffect,
     lastCue: audio.lastCue,
     levelsRef: audio.levelsRef
   });
+
+  useEffect(() => {
+    if (!autoCycleEffects || audio.status !== "connected") {
+      return;
+    }
+
+    const cycleTimer = window.setInterval(() => {
+      setSelectedEffect((currentEffect) => getNextAudioReactiveEffect(currentEffect));
+    }, audioEffectCycleIntervalMs);
+
+    return () => {
+      window.clearInterval(cycleTimer);
+    };
+  }, [audio.status, autoCycleEffects]);
 
   useEffect(() => {
     if (!audio.lastCue) {
@@ -85,6 +108,7 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
   return (
     <AudioSyncControls
       activeDeviceId={audio.activeDeviceId}
+      autoCycleEffects={autoCycleEffects}
       autoTakeOnCue={autoTakeOnCue}
       devices={audio.devices}
       error={audio.error ?? channelError}
@@ -93,14 +117,17 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
       levels={audio.meterLevels}
       nextReady={nextReady}
       selectedDeviceId={audio.selectedDeviceId}
+      selectedEffect={selectedEffect}
       status={audio.status}
       transitionFeedback={transitionFeedback}
       transitionInFlight={takeSignalInFlight}
+      onAutoCycleEffectsChange={setAutoCycleEffects}
       onAutoTakeChange={setAutoTakeOnCue}
       onConnect={() => void audio.connect()}
       onDisconnect={audio.disconnect}
       onIntensityChange={setVfxIntensity}
       onSelectedDeviceChange={audio.setSelectedDeviceId}
+      onSelectedEffectChange={setSelectedEffect}
       onTakeNext={sendManualTake}
     />
   );

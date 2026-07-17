@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioReactiveOverlay } from "@/components/audio-reactive-overlay";
 import type { SessionSnapshot } from "@/lib/snapshot";
+import { useAudioReactiveVisualEffect } from "@/lib/use-audio-reactive-visual-effect";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { useShowAudioSync } from "@/lib/use-show-audio-sync";
 
@@ -16,6 +16,7 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
   const audioSync = useShowAudioSync(initialSnapshot.session.id);
   const [fadeNext, setFadeNext] = useState(false);
   const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
+  const visualTargetRef = useRef<HTMLDivElement>(null);
   const nextVideoRef = useRef<HTMLVideoElement>(null);
   const transitionTimerRef = useRef<number | null>(null);
   const transitionInFlightRef = useRef(false);
@@ -30,6 +31,14 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
   const nextAssetUrl = resolvePlaybackUrl(nextAsset?.publicUrl ?? null);
   const shouldRenderNext = Boolean(nextAssetUrl);
   const crossfadeDurationMs = Math.max(400, Math.round((playback?.crossfadeSeconds ?? 2) * 1000));
+
+  useAudioReactiveVisualEffect({
+    active: audioSync.connected,
+    effect: audioSync.effect,
+    intensity: audioSync.intensity,
+    levelsRef: audioSync.levelsRef,
+    targetRef: visualTargetRef
+  });
 
   const takeNext = useCallback(
     () => {
@@ -133,39 +142,39 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
 
   return (
     <main className="relative min-h-screen cursor-none overflow-hidden bg-black">
-      {currentAssetUrl ? (
-        <video
-          key={currentAsset?.id}
-          className="absolute inset-0 h-full w-full object-cover"
-          src={currentAssetUrl}
-          autoPlay
-          loop
-          muted
-          playsInline
-        />
-      ) : (
-        <div className="absolute inset-0 subtle-grid bg-aurora" />
-      )}
+      <div ref={visualTargetRef} className="absolute inset-0 overflow-hidden">
+        {currentAssetUrl ? (
+          <video
+            key={currentAsset?.id}
+            className="absolute inset-0 h-full w-full object-cover"
+            src={currentAssetUrl}
+            autoPlay
+            loop
+            muted
+            playsInline
+          />
+        ) : (
+          <div className="absolute inset-0 subtle-grid bg-aurora" />
+        )}
 
-      {shouldRenderNext && nextAssetUrl ? (
-        <video
-          key={nextAsset?.id}
-          ref={nextVideoRef}
-          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-[2200ms] ${
-            fadeNext ? "opacity-100" : "opacity-0"
-          }`}
-          style={{
-            transitionDuration: `${crossfadeDurationMs}ms`
-          }}
-          src={nextAssetUrl}
-          autoPlay
-          loop
-          muted
-          playsInline
-        />
-      ) : null}
-
-      <AudioReactiveOverlay active={audioSync.connected} intensity={audioSync.intensity} levelsRef={audioSync.levelsRef} />
+        {shouldRenderNext && nextAssetUrl ? (
+          <video
+            key={nextAsset?.id}
+            ref={nextVideoRef}
+            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-[2200ms] ${
+              fadeNext ? "opacity-100" : "opacity-0"
+            }`}
+            style={{
+              transitionDuration: `${crossfadeDurationMs}ms`
+            }}
+            src={nextAssetUrl}
+            autoPlay
+            loop
+            muted
+            playsInline
+          />
+        ) : null}
+      </div>
 
       <div className="pointer-events-none absolute inset-0 z-20 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.1),transparent_30%),linear-gradient(180deg,transparent_55%,rgba(0,0,0,0.45)_100%)]" />
     </main>

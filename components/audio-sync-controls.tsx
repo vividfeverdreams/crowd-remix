@@ -1,4 +1,9 @@
 "use client";
+import {
+  audioEffectCycleIntervalMs,
+  audioReactiveEffects,
+  type AudioReactiveEffectId
+} from "@/lib/audio-reactive-effects";
 import type {
   AudioCueEvent,
   AudioInputDevice,
@@ -8,6 +13,7 @@ import type {
 
 type AudioSyncControlsProps = {
   activeDeviceId: string;
+  autoCycleEffects: boolean;
   autoTakeOnCue: boolean;
   devices: AudioInputDevice[];
   error: string | null;
@@ -16,14 +22,17 @@ type AudioSyncControlsProps = {
   levels: AudioReactiveLevels;
   nextReady: boolean;
   selectedDeviceId: string;
+  selectedEffect: AudioReactiveEffectId;
   status: AudioInputStatus;
   transitionFeedback: string | null;
   transitionInFlight: boolean;
+  onAutoCycleEffectsChange: (enabled: boolean) => void;
   onAutoTakeChange: (enabled: boolean) => void;
   onConnect: () => void;
   onDisconnect: () => void;
   onIntensityChange: (intensity: number) => void;
   onSelectedDeviceChange: (deviceId: string) => void;
+  onSelectedEffectChange: (effect: AudioReactiveEffectId) => void;
   onTakeNext: () => void;
 };
 
@@ -113,6 +122,32 @@ export function AudioSyncControls(props: AudioSyncControlsProps) {
           onChange={(event) => props.onIntensityChange(Number(event.target.value))}
           className="mt-2 w-full accent-[#10d6a0]"
         />
+      </label>
+
+      <label className="mt-5 block">
+        <span className="mb-2 block text-xs font-medium text-white/65">Audio-reactive effect</span>
+        <select
+          value={props.selectedEffect}
+          onChange={(event) => props.onSelectedEffectChange(event.target.value as AudioReactiveEffectId)}
+          className="w-full rounded-2xl border border-white/10 bg-black/55 px-3 py-2.5 text-sm text-white outline-none focus:border-plasma"
+        >
+          {audioReactiveEffects.map((effect) => (
+            <option key={effect.id} value={effect.id}>
+              {effect.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="mt-3 flex items-center gap-3 text-sm text-white/72">
+        <input
+          type="checkbox"
+          checked={props.autoCycleEffects}
+          onChange={(event) => props.onAutoCycleEffectsChange(event.target.checked)}
+        />
+        <span>
+          Auto-cycle effects every {audioEffectCycleIntervalMs / 1000} seconds
+        </span>
       </label>
 
       <label className="mt-4 flex items-start gap-3 rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/72">

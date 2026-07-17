@@ -17,6 +17,7 @@ describe("audio sync channel protocol", () => {
       connected: true,
       intensity: 0.85,
       autoTakeOnCue: true,
+      effect: "glitch-jitter",
       levels: {
         energy: 0.4,
         bass: 0.6,
@@ -32,7 +33,7 @@ describe("audio sync channel protocol", () => {
   it("rejects malformed cross-window messages", () => {
     expect(
       isAudioSyncMessage({
-        version: 1,
+        version: 2,
         sessionId: "session-123",
         sourceId: "unknown",
         sentAt: Date.now(),
@@ -40,7 +41,28 @@ describe("audio sync channel protocol", () => {
         connected: true,
         intensity: "loud",
         autoTakeOnCue: true,
+        effect: "not-an-effect",
         levels: {}
+      })
+    ).toBe(false);
+  });
+
+  it("rejects frames with an unknown effect", () => {
+    expect(
+      isAudioSyncMessage({
+        ...createAudioSyncBase("session-123", "dashboard-1"),
+        type: "frame",
+        connected: true,
+        intensity: 0.85,
+        autoTakeOnCue: true,
+        effect: "unknown-vfx",
+        levels: {
+          energy: 0.4,
+          bass: 0.6,
+          mid: 0.3,
+          high: 0.2,
+          beatPulse: 1
+        }
       })
     ).toBe(false);
   });

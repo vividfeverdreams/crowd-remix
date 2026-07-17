@@ -150,8 +150,9 @@ Use the **Audio Reactive Engine** panel directly on the DJ dashboard, then open 
 
 1. Route a mixer, audio interface, or virtual loopback output into an input device visible to the browser.
 2. Click **Connect input** and allow microphone/audio-input access for the site.
-3. Select the desired input and adjust **VFX intensity**.
-4. Leave **Take next remix on musical cue** enabled to crossfade ready Sora remixes on detected builds and strong returns after quiet passages.
+3. Select the desired input, choose one of the 10 audio-reactive transformations from the dropdown, and adjust **VFX intensity**. The selected treatment transforms the Sora footage itself rather than drawing a graphic overlay.
+4. Turn on **Auto-cycle all 10 effects** to move to the next effect every 12 seconds while the input is connected.
+5. Leave **Take next remix on musical cue** enabled to crossfade ready Sora remixes on detected builds and strong returns after quiet passages.
 
 The input is analyzed locally with the Web Audio API and is never connected to browser playback, which avoids monitoring feedback. Keep the dashboard open on the same browser and computer as the show window; it sends only reactive levels and transition cues to the visual output. The projection window contains no operator controls or status text.
 

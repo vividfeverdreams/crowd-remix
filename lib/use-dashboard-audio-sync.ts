@@ -9,6 +9,7 @@ import {
   type AudioSyncStateMessage,
   type AudioSyncTakeMessage
 } from "@/lib/audio-sync-channel";
+import type { AudioReactiveEffectId } from "@/lib/audio-reactive-effects";
 import type { AudioCueEvent, AudioReactiveLevels } from "@/lib/use-audio-reactive-input";
 
 type UseDashboardAudioSyncOptions = {
@@ -16,6 +17,7 @@ type UseDashboardAudioSyncOptions = {
   connected: boolean;
   intensity: number;
   autoTakeOnCue: boolean;
+  effect: AudioReactiveEffectId;
   lastCue: AudioCueEvent | null;
   levelsRef: MutableRefObject<AudioReactiveLevels>;
 };
@@ -27,6 +29,7 @@ export function useDashboardAudioSync({
   connected,
   intensity,
   autoTakeOnCue,
+  effect,
   lastCue,
   levelsRef
 }: UseDashboardAudioSyncOptions) {
@@ -34,9 +37,11 @@ export function useDashboardAudioSync({
   const sourceIdRef = useRef("");
   const intensityRef = useRef(intensity);
   const autoTakeOnCueRef = useRef(autoTakeOnCue);
+  const effectRef = useRef(effect);
   const [supported, setSupported] = useState(true);
   intensityRef.current = intensity;
   autoTakeOnCueRef.current = autoTakeOnCue;
+  effectRef.current = effect;
 
   useEffect(() => {
     if (!("BroadcastChannel" in window)) {
@@ -56,7 +61,8 @@ export function useDashboardAudioSync({
         type: "state",
         connected: false,
         intensity: intensityRef.current,
-        autoTakeOnCue: autoTakeOnCueRef.current
+        autoTakeOnCue: autoTakeOnCueRef.current,
+        effect: effectRef.current
       });
       channel.close();
       channelRef.current = null;
@@ -76,10 +82,11 @@ export function useDashboardAudioSync({
       type: "state",
       connected,
       intensity,
-      autoTakeOnCue
+      autoTakeOnCue,
+      effect
     };
     postMessage(channel, message);
-  }, [autoTakeOnCue, connected, intensity, sessionId]);
+  }, [autoTakeOnCue, connected, effect, intensity, sessionId]);
 
   useEffect(() => {
     if (!connected) {
@@ -101,6 +108,7 @@ export function useDashboardAudioSync({
           connected: true,
           intensity,
           autoTakeOnCue,
+          effect,
           levels: levelsRef.current
         };
         postMessage(channel, message);
@@ -114,7 +122,7 @@ export function useDashboardAudioSync({
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [autoTakeOnCue, connected, intensity, levelsRef, sessionId]);
+  }, [autoTakeOnCue, connected, effect, intensity, levelsRef, sessionId]);
 
   useEffect(() => {
     const channel = channelRef.current;
