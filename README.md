@@ -22,6 +22,7 @@ DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a v
 - SMS intake via Twilio webhook
 - Public web prompt intake via `/r/[sessionCode]`
 - OpenAI text scoring for moderation/ranking/prompt compilation
+- AI-assisted session setup that expands a plain-English concept into an editable visual-DNA draft
 - OpenAI Sora seed/remix orchestration
 - SSE-driven realtime updates for the dashboard and show screen
 - Double-buffer video crossfade on the fullscreen playback route
@@ -85,6 +86,8 @@ You can override those values with `SEED_DJ_EMAIL` and `SEED_DJ_PASSWORD`.
 - `OPENAI_VIDEO_MODEL`
 
 The app reads OpenAI credentials from environment variables only. The dashboard does not store or edit API keys.
+
+The AI-assisted session setup uses this same OpenAI text-model configuration. If draft generation is unavailable, the setup screen still lets the DJ enter every field manually.
 
 ### Required for Twilio SMS intake
 

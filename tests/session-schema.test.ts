@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionFormSchema } from "@/lib/schemas";
+import { sessionFormSchema, sessionIdeaSchema, sessionPrefillSchema } from "@/lib/schemas";
 
 const validSession = {
   name: "A",
@@ -52,5 +52,58 @@ describe("sessionFormSchema", () => {
     if (!result.success) {
       expect(result.error.issues[0]?.message).toBe("Enter a valid image reference URL.");
     }
+  });
+});
+
+describe("sessionIdeaSchema", () => {
+  it("accepts and trims a plain-English session idea", () => {
+    const result = sessionIdeaSchema.safeParse({ idea: "  Blue fog with slow camera movement.  " });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.idea).toBe("Blue fog with slow camera movement.");
+    }
+  });
+
+  it("asks for more detail when the idea is too short", () => {
+    const result = sessionIdeaSchema.safeParse({ idea: "AI" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe("Tell us a little more about the session you want to create.");
+    }
+  });
+});
+
+describe("sessionPrefillSchema", () => {
+  it("accepts an AI draft containing every editable creative field", () => {
+    const result = sessionPrefillSchema.safeParse({
+      name: validSession.name,
+      artistName: validSession.artistName,
+      trackName: validSession.trackName,
+      creativeBible: validSession.creativeBible,
+      allowedMotifs: validSession.allowedMotifs,
+      bannedTerms: validSession.bannedTerms,
+      colorPalette: validSession.colorPalette,
+      motionRules: validSession.motionRules,
+      basePrompt: validSession.basePrompt
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a draft that omits a required answer", () => {
+    const result = sessionPrefillSchema.safeParse({
+      name: validSession.name,
+      artistName: validSession.artistName,
+      trackName: validSession.trackName,
+      creativeBible: validSession.creativeBible,
+      allowedMotifs: validSession.allowedMotifs,
+      bannedTerms: validSession.bannedTerms,
+      colorPalette: validSession.colorPalette,
+      motionRules: validSession.motionRules
+    });
+
+    expect(result.success).toBe(false);
   });
 });
