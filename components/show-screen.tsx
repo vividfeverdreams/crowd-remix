@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { decideAutomaticCueTransition, getTypewriterChunkSize } from "@/lib/remix-transition";
+import { getAccountRemixPath } from "@/lib/remix-links";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useAudioReactiveVisualEffect } from "@/lib/use-audio-reactive-visual-effect";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
@@ -45,8 +46,8 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
   const crossfadeDurationMs = Math.max(400, Math.round((playback?.crossfadeSeconds ?? 2) * 1000));
 
   useEffect(() => {
-    setSubmissionUrl(new URL(`/r/${session.code}`, window.location.origin).toString());
-  }, [session.code]);
+    setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
+  }, [session.userId]);
 
   useAudioReactiveVisualEffect({
     active: audioSync.connected,

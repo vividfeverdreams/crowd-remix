@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useDeferredValue, useEffect, useState } from "react";
 import { DashboardAudioSync } from "@/components/dashboard-audio-sync";
 import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
+import { getAccountRemixPath } from "@/lib/remix-links";
 import { normalizeVideoProgress } from "@/lib/render-progress";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
@@ -34,7 +35,7 @@ export function DashboardShell({
   const session = deferredSnapshot.session;
   const qrOverlay = useShowQrOverlay(session.id);
   const playback = session.playbackState;
-  const publicLink = `/r/${session.code}`;
+  const publicLink = getAccountRemixPath(session.userId);
   const showLink = `/show/${session.id}`;
   const canStartSession = session.status !== "live";
   const seedRender = session.renderJobs.find((job: any) => job.mode === "seed");
