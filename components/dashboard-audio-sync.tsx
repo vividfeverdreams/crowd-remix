@@ -26,6 +26,7 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
   const [takeSignalInFlight, setTakeSignalInFlight] = useState(false);
   const takeSignalTimerRef = useRef<number | null>(null);
   const describedCueIdRef = useRef<string | null>(null);
+  const queuedCueIdRef = useRef<string | null>(null);
   const sync = useDashboardAudioSync({
     sessionId,
     connected: audio.status === "connected",
@@ -66,13 +67,30 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
     const cueLabel = audio.lastCue.kind === "build" ? "Build" : "Section change";
 
     if (!autoTakeOnCue) {
+      queuedCueIdRef.current = null;
       setTransitionFeedback(`${cueLabel} detected. Automatic take is disabled.`);
     } else if (!nextReady) {
-      setTransitionFeedback(`${cueLabel} detected, but the next remix is not ready yet.`);
+      queuedCueIdRef.current = cueId;
+      setTransitionFeedback(`${cueLabel} detected. The take is queued until the next remix is ready.`);
     } else {
+      queuedCueIdRef.current = null;
       setTransitionFeedback(`${cueLabel} detected. The take signal was sent to the show output.`);
     }
   }, [audio.lastCue, autoTakeOnCue, nextReady]);
+
+  useEffect(() => {
+    if (!autoTakeOnCue) {
+      queuedCueIdRef.current = null;
+      return;
+    }
+
+    if (!nextReady || !queuedCueIdRef.current) {
+      return;
+    }
+
+    queuedCueIdRef.current = null;
+    setTransitionFeedback("The remix is ready. Taking it now on the queued musical cue.");
+  }, [autoTakeOnCue, nextReady]);
 
   useEffect(() => {
     return () => {

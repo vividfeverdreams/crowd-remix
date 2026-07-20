@@ -10,10 +10,17 @@ type TransitionRouteProps = {
 
 export async function POST(_request: Request, { params }: TransitionRouteProps) {
   const { sessionId } = await params;
-  await completePlaybackTransition(sessionId);
+  const transitioned = await completePlaybackTransition(sessionId);
+
+  console.info("[playback-transition] request completed", {
+    sessionId,
+    transitioned: Boolean(transitioned)
+  });
+
   await attemptAutomatedSelection(sessionId);
 
   return NextResponse.json({
-    ok: true
+    ok: true,
+    transitioned: Boolean(transitioned)
   });
 }

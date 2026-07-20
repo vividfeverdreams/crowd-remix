@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { decideAutomaticCueTransition, getTypewriterChunkSize } from "@/lib/remix-transition";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useAudioReactiveVisualEffect } from "@/lib/use-audio-reactive-visual-effect";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
@@ -11,13 +12,20 @@ type ShowScreenProps = {
   isMonitor?: boolean;
 };
 
+type QueuedTransition = {
+  assetId: string;
+  promptText: string;
+};
+
 export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenProps) {
   const snapshot = useSessionSnapshot(initialSnapshot);
   const audioSync = useShowAudioSync(initialSnapshot.session.id);
   const [fadeNext, setFadeNext] = useState(false);
   const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
+  const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
   const visualTargetRef = useRef<HTMLDivElement>(null);
   const nextVideoRef = useRef<HTMLVideoElement>(null);
+  const promptRevealRef = useRef<QueuedTransition | null>(null);
   const transitionTimerRef = useRef<number | null>(null);
   const transitionInFlightRef = useRef(false);
   const handledCueIdRef = useRef<string | null>(null);
@@ -40,16 +48,9 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
     targetRef: visualTargetRef
   });
 
-  const takeNext = useCallback(
-    () => {
-      const assetId = nextAsset?.id;
-
-      if (!assetId || !nextAssetUrl || assetId === handledNextAssetId || transitionInFlightRef.current) {
-        return false;
-      }
-
-      transitionInFlightRef.current = true;
-      void nextVideoRef.current?.play().catch(() => undefined);
+  const beginCrossfade = useCallback(
+    (transition: QueuedTransition) => {
+      setPromptReveal(null);
       setFadeNext(true);
 
       if (transitionTimerRef.current !== null) {
@@ -67,7 +68,7 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
               throw new Error("The transition endpoint rejected the cutover.");
             }
 
-            setHandledNextAssetId(assetId);
+            setHandledNextAssetId(transition.assetId);
           } catch {
             setFadeNext(false);
           } finally {
@@ -76,11 +77,39 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
           }
         })();
       }, crossfadeDurationMs);
-
-      return true;
     },
-    [crossfadeDurationMs, handledNextAssetId, nextAsset?.id, nextAssetUrl, session.id]
+    [crossfadeDurationMs, session.id]
   );
+
+  const finishPromptReveal = useCallback(() => {
+    const transition = promptRevealRef.current;
+
+    if (!transition) {
+      return;
+    }
+
+    promptRevealRef.current = null;
+    beginCrossfade(transition);
+  }, [beginCrossfade]);
+
+  const takeNext = useCallback(() => {
+    const assetId = nextAsset?.id;
+
+    if (!assetId || !nextAssetUrl || assetId === handledNextAssetId || transitionInFlightRef.current) {
+      return false;
+    }
+
+    const transition = {
+      assetId,
+      promptText: nextAsset.promptText.trim() || "New remix incoming."
+    };
+
+    transitionInFlightRef.current = true;
+    promptRevealRef.current = transition;
+    void nextVideoRef.current?.play().catch(() => undefined);
+    setPromptReveal(transition);
+    return true;
+  }, [handledNextAssetId, nextAsset, nextAssetUrl]);
 
   useEffect(() => {
     if (!handledNextAssetId || currentAsset?.id !== handledNextAssetId) {
@@ -112,14 +141,21 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
       return;
     }
 
-    handledCueIdRef.current = cue.id;
+    const decision = decideAutomaticCueTransition({
+      autoTakeOnCue: audioSync.autoTakeOnCue,
+      nextAssetReady: Boolean(nextAsset?.id && nextAssetUrl)
+    });
 
-    if (!audioSync.autoTakeOnCue || !nextAsset?.id) {
+    if (decision === "wait-for-remix") {
       return;
     }
 
-    takeNext();
-  }, [audioSync.autoTakeOnCue, audioSync.connected, audioSync.lastCue, isMonitor, nextAsset?.id, takeNext]);
+    handledCueIdRef.current = cue.id;
+
+    if (decision === "take-remix") {
+      takeNext();
+    }
+  }, [audioSync.autoTakeOnCue, audioSync.connected, audioSync.lastCue, isMonitor, nextAsset?.id, nextAssetUrl, takeNext]);
 
   useEffect(() => {
     const requestId = audioSync.manualTakeRequestId;
@@ -137,6 +173,8 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
       if (transitionTimerRef.current !== null) {
         window.clearTimeout(transitionTimerRef.current);
       }
+
+      promptRevealRef.current = null;
     };
   }, []);
 
@@ -177,7 +215,79 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
       </div>
 
       <div className="pointer-events-none absolute inset-0 z-20 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.1),transparent_30%),linear-gradient(180deg,transparent_55%,rgba(0,0,0,0.45)_100%)]" />
+
+      {promptReveal ? (
+        <PromptTypewriterOverlay promptText={promptReveal.promptText} onComplete={finishPromptReveal} />
+      ) : null}
     </main>
+  );
+}
+
+function PromptTypewriterOverlay({ promptText, onComplete }: { promptText: string; onComplete: () => void }) {
+  const [visibleCharacterCount, setVisibleCharacterCount] = useState(0);
+
+  useEffect(() => {
+    setVisibleCharacterCount(0);
+
+    let typingTimer: number | null = null;
+    let holdTimer: number | null = null;
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const scheduleCompletion = (delayMs: number) => {
+      holdTimer = window.setTimeout(onComplete, delayMs);
+    };
+
+    if (prefersReducedMotion || promptText.length === 0) {
+      setVisibleCharacterCount(promptText.length);
+      scheduleCompletion(800);
+    } else {
+      const chunkSize = getTypewriterChunkSize(promptText.length);
+      let nextCharacterCount = 0;
+
+      const revealNextChunk = () => {
+        nextCharacterCount = Math.min(promptText.length, nextCharacterCount + chunkSize);
+        setVisibleCharacterCount(nextCharacterCount);
+
+        if (nextCharacterCount === promptText.length) {
+          if (typingTimer !== null) {
+            window.clearInterval(typingTimer);
+            typingTimer = null;
+          }
+
+          scheduleCompletion(950);
+        }
+      };
+
+      typingTimer = window.setInterval(revealNextChunk, 40);
+      revealNextChunk();
+    }
+
+    return () => {
+      if (typingTimer !== null) {
+        window.clearInterval(typingTimer);
+      }
+
+      if (holdTimer !== null) {
+        window.clearTimeout(holdTimer);
+      }
+    };
+  }, [onComplete, promptText]);
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-40 grid place-items-center bg-black/80 px-6 backdrop-blur-sm"
+      role="status"
+      aria-live="polite"
+      aria-label={`Incoming remix prompt: ${promptText}`}
+    >
+      <div className="w-full max-w-5xl" aria-hidden="true">
+        <p className="font-mono text-[10px] uppercase tracking-[0.38em] text-plasma sm:text-xs">Incoming remix</p>
+        <p className="mt-5 whitespace-pre-wrap break-words font-mono text-[clamp(1.4rem,4vw,3.6rem)] leading-[1.22] text-white">
+          {promptText.slice(0, visibleCharacterCount)}
+          <span className="ml-1 inline-block animate-pulse text-plasma">▋</span>
+        </p>
+      </div>
+    </div>
   );
 }
 
