@@ -237,7 +237,7 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
 
 function AudienceQrOverlay({ submissionUrl }: { submissionUrl: string }) {
   return (
-    <aside className="pointer-events-none absolute right-[clamp(1rem,2.5vw,2.5rem)] top-[clamp(1rem,2.5vw,2.5rem)] z-50 w-[clamp(8rem,20vw,20rem)]">
+    <aside className="pointer-events-none absolute right-[clamp(0.75rem,1.5vw,1.5rem)] top-[clamp(0.75rem,1.5vw,1.5rem)] z-50 w-[clamp(5rem,12vw,10rem)]">
       <QRCodeSVG
         value={submissionUrl}
         title="QR code for the audience remix submission page"

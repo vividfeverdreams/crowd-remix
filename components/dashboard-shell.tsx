@@ -447,10 +447,7 @@ export function DashboardShell({
                 </p>
               </div>
 
-              <label className="inline-flex cursor-pointer items-center gap-3">
-                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/48">
-                  {qrOverlay.visible ? "On" : "Off"}
-                </span>
+              <label className="inline-flex h-7 w-12 shrink-0 cursor-pointer items-center">
                 <input
                   type="checkbox"
                   role="switch"
