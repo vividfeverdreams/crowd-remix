@@ -236,33 +236,17 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
 }
 
 function AudienceQrOverlay({ submissionUrl }: { submissionUrl: string }) {
-  const displayUrl = submissionUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
-
   return (
-    <aside className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-[clamp(1.5rem,5vw,5rem)]">
-      <div className="flex w-full max-w-6xl flex-col items-center gap-7 rounded-[2.5rem] border border-white/15 bg-ink/95 p-[clamp(1.5rem,4vw,4rem)] shadow-2xl backdrop-blur-xl sm:flex-row sm:justify-between sm:gap-12">
-        <div className="max-w-xl text-center sm:text-left">
-          <p className="font-mono text-[10px] uppercase tracking-[0.38em] text-plasma sm:text-xs">Shape the next visual</p>
-          <h2 className="mt-5 text-[clamp(2rem,5vw,5rem)] font-semibold leading-[0.98] text-white">
-            Scan to remix the show.
-          </h2>
-          <p className="mt-5 text-[clamp(0.9rem,1.8vw,1.35rem)] leading-relaxed text-white/68">
-            Send your visual idea straight to the live queue.
-          </p>
-          <p className="mt-5 break-all font-mono text-[clamp(0.7rem,1.4vw,1rem)] text-plasma/85">{displayUrl}</p>
-        </div>
-
-        <div className="w-[min(62vw,24rem)] shrink-0 rounded-[2rem] bg-white p-[clamp(0.8rem,2vw,1.4rem)] shadow-[0_0_80px_rgba(16,214,160,0.2)] sm:w-[min(34vw,26rem)]">
-          <QRCodeSVG
-            value={submissionUrl}
-            title="QR code for the audience remix submission page"
-            level="H"
-            bgColor="#ffffff"
-            fgColor="#091018"
-            className="h-auto w-full"
-          />
-        </div>
-      </div>
+    <aside className="pointer-events-none absolute right-[clamp(1rem,2.5vw,2.5rem)] top-[clamp(1rem,2.5vw,2.5rem)] z-50 w-[clamp(8rem,20vw,20rem)]">
+      <QRCodeSVG
+        value={submissionUrl}
+        title="QR code for the audience remix submission page"
+        level="H"
+        marginSize={4}
+        bgColor="#ffffff"
+        fgColor="#091018"
+        className="h-auto w-full"
+      />
     </aside>
   );
 }
