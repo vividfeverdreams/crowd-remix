@@ -35,4 +35,19 @@ describe("heuristicAssessment", () => {
     expect(result.decision).toBe("rejected");
     expect(result.flags).toContain("blocked-term");
   });
+
+  it("keeps motifs open-ended when the creation toggle is off", () => {
+    const result = heuristicAssessment({
+      submissionText: "Fill the tunnel with floating paper lanterns",
+      session: {
+        ...session,
+        allowedMotifs: ""
+      },
+      recentWinningPrompts: []
+    });
+
+    expect(result.decision).toBe("approved");
+    expect(result.winningPrompt).toContain("Motifs are open-ended");
+    expect(result.winningPrompt).not.toContain("Preferred motifs:");
+  });
 });

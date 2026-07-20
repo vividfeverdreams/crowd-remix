@@ -72,6 +72,7 @@ export async function assessSubmission(input: AssessmentInput): Promise<Submissi
       instructions: [
         "You are the crowd prompt safety and remix-ranking engine for a live DJ visual platform.",
         "You must keep every approved prompt within the DJ's visual DNA.",
+        "When session.allowedMotifs is empty, motifs are intentionally open-ended: do not reject or lower a score just because an idea uses an unlisted motif.",
         "Reject prompts that are unsafe, spammy, off-theme, ask for real people, public figures, copyrighted characters, copyrighted music references, or anything that is not venue-safe.",
         "For approved prompts, rewrite the input into a single focused remix instruction that preserves the session's current visual identity.",
         "Return only valid JSON that matches the provided schema."
@@ -153,6 +154,7 @@ export async function assessSubmission(input: AssessmentInput): Promise<Submissi
 export function heuristicAssessment(input: AssessmentInput): SubmissionAssessment {
   const normalized = normalizePromptText(input.submissionText).toLowerCase();
   const bannedTerms = splitList(input.session.bannedTerms).map((term) => term.toLowerCase());
+  const allowedMotifs = splitList(input.session.allowedMotifs);
 
   const flags = new Set<string>();
   let decision: "approved" | "rejected" = "approved";
@@ -178,7 +180,7 @@ export function heuristicAssessment(input: AssessmentInput): SubmissionAssessmen
   }
 
   const cohesionScore = clamp(
-    72 + splitList(input.session.allowedMotifs).filter((motif) => normalized.includes(motif.toLowerCase())).length * 6,
+    72 + allowedMotifs.filter((motif) => normalized.includes(motif.toLowerCase())).length * 6,
     25,
     100
   );
@@ -204,7 +206,9 @@ export function heuristicAssessment(input: AssessmentInput): SubmissionAssessmen
     winningPrompt: [
       `Remix the active loop for ${input.session.artistName} - ${input.session.trackName}.`,
       `Keep the visual DNA anchored in: ${input.session.creativeBible}.`,
-      `Allowed motifs: ${input.session.allowedMotifs}.`,
+      allowedMotifs.length > 0
+        ? `Preferred motifs: ${input.session.allowedMotifs}.`
+        : "Motifs are open-ended; honor the crowd idea while preserving the session's visual identity.",
       `Palette: ${input.session.colorPalette}. Motion rules: ${input.session.motionRules}.`,
       `Make one focused crowd-requested change: ${normalizePromptText(input.submissionText)}.`,
       "Preserve continuity, camera feel, and venue-safe abstract artistry. No text overlays, no real people, no copyrighted characters."

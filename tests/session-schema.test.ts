@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionFormSchema, sessionIdeaSchema, sessionPrefillSchema } from "@/lib/schemas";
+import { publicSubmissionSchema, sessionFormSchema, sessionIdeaSchema, sessionPrefillSchema } from "@/lib/schemas";
 
 const validSession = {
   name: "A",
@@ -53,6 +53,18 @@ describe("sessionFormSchema", () => {
       expect(result.error.issues[0]?.message).toBe("Enter a valid image reference URL.");
     }
   });
+
+  it("accepts an empty allowed-motifs list when the creation toggle is off", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      allowedMotifs: ""
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.allowedMotifs).toBe("");
+    }
+  });
 });
 
 describe("sessionIdeaSchema", () => {
@@ -103,6 +115,22 @@ describe("sessionPrefillSchema", () => {
       colorPalette: validSession.colorPalette,
       motionRules: validSession.motionRules
     });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("publicSubmissionSchema", () => {
+  it("accepts a detailed visual idea longer than the old 240-character limit", () => {
+    const prompt = `Shift the whole visual world into a moonlit paper city with slow lanterns and soft shadows. ${"Add layered texture and gentle movement. ".repeat(6)}`;
+    const result = publicSubmissionSchema.safeParse({ prompt });
+
+    expect(prompt.length).toBeGreaterThan(240);
+    expect(result.success).toBe(true);
+  });
+
+  it("still limits excessively long audience requests", () => {
+    const result = publicSubmissionSchema.safeParse({ prompt: "x".repeat(601) });
 
     expect(result.success).toBe(false);
   });

@@ -568,7 +568,9 @@ export function DashboardShell({
             <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Session DNA</p>
             <div className="mt-5 space-y-4 text-sm leading-7 text-white/74">
               <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">{session.creativeBible}</div>
-              <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">Allowed motifs: {session.allowedMotifs}</div>
+              <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">
+                {session.allowedMotifs ? `Allowed motifs: ${session.allowedMotifs}` : "Allowed motifs: Off (open-ended)"}
+              </div>
               <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">Blocked themes: {session.bannedTerms}</div>
               <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">Motion rules: {session.motionRules}</div>
             </div>

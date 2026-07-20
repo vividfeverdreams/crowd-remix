@@ -36,7 +36,7 @@ export default async function PublicSubmissionPage({ params }: PublicRouteProps)
           <h1 className="mt-4 text-4xl font-semibold text-white">{session.artistName}</h1>
           <p className="mt-3 text-base text-white/72">Track focus: {session.trackName}</p>
           <p className="mt-5 max-w-2xl text-sm leading-7 text-white/70">
-            Send one visual change at a time. The system keeps every winning idea inside the artist and track mood, blocks unsafe requests,
+            Tell us what you want to see next. The system keeps every winning idea inside the artist and track mood, blocks unsafe requests,
             and folds the best crowd prompt into the live visual loop.
           </p>
         </div>
@@ -63,7 +63,9 @@ export default async function PublicSubmissionPage({ params }: PublicRouteProps)
 
             <div className="mt-6 space-y-3 text-sm text-white/70">
               <div className="rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                Allowed motifs: {session.allowedMotifs}
+                {session.allowedMotifs
+                  ? `Allowed motifs: ${session.allowedMotifs}`
+                  : "Motifs are open-ended—suggest anything that fits the visual world."}
               </div>
               <div className="rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3">
                 Palette: {session.colorPalette}

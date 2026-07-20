@@ -35,6 +35,7 @@ export function SessionSetupForm() {
   const [form, setForm] = useState(blankForm);
   const [ideaError, setIdeaError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [allowedMotifsEnabled, setAllowedMotifsEnabled] = useState(true);
   const [isGenerating, startGenerating] = useTransition();
   const [isCreating, startCreating] = useTransition();
 
@@ -62,6 +63,7 @@ export function SessionSetupForm() {
           ...current,
           ...result.draft
         }));
+        setAllowedMotifsEnabled(true);
         setDraftSource("ai");
         setError(null);
         setStep("details");
@@ -73,6 +75,7 @@ export function SessionSetupForm() {
 
   function enterManually() {
     setForm(blankForm);
+    setAllowedMotifsEnabled(true);
     setDraftSource("manual");
     setIdeaError(null);
     setError(null);
@@ -88,7 +91,10 @@ export function SessionSetupForm() {
     event.preventDefault();
     setError(null);
 
-    const parsed = sessionFormSchema.safeParse(form);
+    const parsed = sessionFormSchema.safeParse({
+      ...form,
+      allowedMotifs: allowedMotifsEnabled ? form.allowedMotifs : ""
+    });
 
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "Check the session details and try again.");
@@ -284,17 +290,35 @@ export function SessionSetupForm() {
             />
           </label>
 
-          <label className="block">
-            <span className="mb-2 block text-sm font-medium text-white/80">Allowed Motifs</span>
+          <div className="block">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <span className="text-sm font-medium text-white/80">Allowed Motifs</span>
+              <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-white/65">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={allowedMotifsEnabled}
+                  onChange={(event) => setAllowedMotifsEnabled(event.target.checked)}
+                />
+                {allowedMotifsEnabled ? "On" : "Off"}
+              </label>
+            </div>
             <textarea
-              required
+              required={allowedMotifsEnabled}
               maxLength={400}
               rows={4}
               value={form.allowedMotifs}
               onChange={(event) => setForm((current) => ({ ...current, allowedMotifs: event.target.value }))}
-              className={inputClassName}
+              disabled={!allowedMotifsEnabled}
+              aria-describedby="allowed-motifs-help"
+              className={`${inputClassName} disabled:cursor-not-allowed disabled:border-white/5 disabled:bg-black/15 disabled:text-white/25`}
             />
-          </label>
+            <p id="allowed-motifs-help" className="mt-2 text-xs leading-5 text-white/45">
+              {allowedMotifsEnabled
+                ? "On: crowd ideas are guided toward this motif list."
+                : "Off: crowd members can suggest any motif that still fits the session and safety rules."}
+            </p>
+          </div>
 
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-white/80">Banned Terms</span>

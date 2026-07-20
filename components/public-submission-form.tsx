@@ -25,7 +25,6 @@ export function PublicSubmissionForm({
   disabledMessage = null
 }: PublicSubmissionFormProps) {
   const [prompt, setPrompt] = useState("");
-  const [senderLabel, setSenderLabel] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [trackedSubmissionId, setTrackedSubmissionId] = useState<string | null>(null);
@@ -65,8 +64,7 @@ export function PublicSubmissionForm({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          prompt,
-          senderLabel
+          prompt
         })
       });
 
@@ -129,32 +127,24 @@ export function PublicSubmissionForm({
 
   return (
     <div>
-      <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-white/45">One change at a time</p>
+      <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-white/45">Shape the next visual</p>
       <p className="mt-3 text-sm leading-7 text-white/68">
-        After you send a remix, stay on this page and we will keep tracking what happens to it.
+        Describe anything you want to see change—colors, mood, setting, movement, texture, or a completely new visual idea.
       </p>
       <form onSubmit={handleSubmit} className="mt-5 space-y-4">
         <label className="block">
-          <span className="mb-2 block text-sm font-medium text-white/82">Optional name</span>
-          <input
-            value={senderLabel}
-            onChange={(event) => setSenderLabel(event.target.value)}
-            disabled={disabled}
-            className="w-full rounded-3xl border border-white/10 bg-black/30 px-4 py-3 outline-none transition focus:border-plasma"
-            placeholder="Skyline crew"
-          />
-        </label>
-
-        <label className="block">
-          <span className="mb-2 block text-sm font-medium text-white/82">Your remix idea</span>
+          <span className="mb-2 block text-base font-medium text-white/88">How would you like to change the visuals?</span>
           <textarea
+            required
+            maxLength={600}
             rows={6}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             disabled={disabled}
             className="w-full rounded-3xl border border-white/10 bg-black/30 px-4 py-3 outline-none transition focus:border-plasma"
-            placeholder="Turn the chrome tunnel into a coral pulse with slower breathing light and a glass ripple on every beat phrase."
+            placeholder="Try anything—change the colors, add a new setting, shift the mood, slow down the movement, or describe a visual you want to see."
           />
+          <span className="mt-2 block text-right font-mono text-[11px] text-white/30">{prompt.length} / 600</span>
         </label>
 
         {message ? <p className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/80">{message}</p> : null}
@@ -198,7 +188,7 @@ export function PublicSubmissionForm({
           disabled={submitting || disabled}
           className="w-full rounded-full bg-white px-6 py-3 text-sm font-semibold text-ink transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {disabled ? "Queue Offline" : submitting ? "Sending..." : "Send Remix"}
+          {disabled ? "Queue Offline" : submitting ? "Sending..." : "Send Visual Idea"}
         </button>
       </form>
     </div>

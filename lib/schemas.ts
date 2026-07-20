@@ -30,7 +30,7 @@ export const sessionFormSchema = z.object({
   artistName: requiredText("Artist", 100),
   trackName: requiredText("Track", 100),
   creativeBible: requiredText("Creative bible", 600),
-  allowedMotifs: requiredText("Allowed motifs", 400),
+  allowedMotifs: z.string().trim().max(400, "Allowed motifs must be 400 characters or fewer."),
   bannedTerms: requiredText("Banned terms", 400),
   colorPalette: requiredText("Color palette", 200),
   motionRules: requiredText("Motion rules", 300),
@@ -77,7 +77,7 @@ export const sessionPrefillSchema = z.object({
 });
 
 export const publicSubmissionSchema = z.object({
-  prompt: z.string().min(4).max(240),
+  prompt: z.string().trim().min(4).max(600),
   senderLabel: z.string().max(80).optional()
 });
 
