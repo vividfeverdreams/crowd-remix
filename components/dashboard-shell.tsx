@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useDeferredValue, useEffect, useState } from "react";
 import { DashboardAudioSync } from "@/components/dashboard-audio-sync";
 import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
+import { normalizeVideoProgress } from "@/lib/render-progress";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { formatRelativeTime } from "@/lib/utils";
@@ -25,6 +26,7 @@ export function DashboardShell({
   const [showWindowFeedback, setShowWindowFeedback] = useState<string | null>(null);
   const [showUrlDisplay, setShowUrlDisplay] = useState("");
   const [confirmingClear, setConfirmingClear] = useState(false);
+  const [renderProgress, setRenderProgress] = useState<Record<string, number>>({});
   const deferredSnapshot = useDeferredValue(snapshot);
   const openAiStatus = initialOpenAiStatus;
 
@@ -33,17 +35,55 @@ export function DashboardShell({
   const publicLink = `/r/${session.code}`;
   const showLink = `/show/${session.id}`;
   const canStartSession = session.status !== "live";
+  const seedRender = session.renderJobs.find((job: any) => job.mode === "seed");
+  const isStartingInitialRender = workingAction === "start-session";
+  const showInitialGeneration =
+    !playback?.currentAsset &&
+    (isStartingInitialRender ||
+      (session.status === "live" &&
+        Boolean(seedRender) &&
+        ["queued", "in_progress", "failed"].includes(seedRender?.status ?? "")));
 
   useEffect(() => {
     if (!deferredSnapshot.queueHealth.waitingOnRender) {
       return;
     }
 
-    const interval = window.setInterval(() => {
-      void fetch(`/api/sessions/${session.id}/reconcile`, {
+    const reconcile = async () => {
+      const response = await fetch(`/api/sessions/${session.id}/reconcile`, {
         method: "POST"
       });
-    }, 15000);
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        jobs?: Array<{
+          id: string;
+          progress: number | null;
+        }>;
+      };
+
+      if (!payload.jobs?.length) {
+        return;
+      }
+
+      setRenderProgress((current) => {
+        const next = { ...current };
+
+        for (const job of payload.jobs ?? []) {
+          if (typeof job.progress === "number") {
+            next[job.id] = normalizeVideoProgress(job.progress, current[job.id]);
+          }
+        }
+
+        return next;
+      });
+    };
+
+    void reconcile();
+    const interval = window.setInterval(() => void reconcile(), 10000);
 
     return () => {
       window.clearInterval(interval);
@@ -244,6 +284,14 @@ export function DashboardShell({
           </button>
         </div>
       </header>
+
+      {showInitialGeneration ? (
+        <InitialGenerationStatus
+          job={seedRender}
+          progress={seedRender ? renderProgress[seedRender.id] : undefined}
+          isStarting={isStartingInitialRender}
+        />
+      ) : null}
 
       <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Session Status" value={session.status} hint={playback?.status ?? "idle"} />
@@ -500,8 +548,15 @@ export function DashboardShell({
                   <div key={job.id} className="rounded-4xl border border-white/10 bg-black/20 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold text-white">{job.mode === "seed" ? "Seed Render" : "DREAM SEQUENCE"}</p>
-                      <span className="text-xs uppercase tracking-[0.24em] text-white/40">{job.status}</span>
+                      <span className="text-xs uppercase tracking-[0.24em] text-white/40">
+                        {job.status === "queued" || job.status === "in_progress"
+                          ? `${renderProgress[job.id] === undefined ? "" : `${renderProgress[job.id]}% · `}${job.status.replace("_", " ")}`
+                          : job.status}
+                      </span>
                     </div>
+                    {job.status === "queued" || job.status === "in_progress" ? (
+                      <GenerationProgressBar progress={renderProgress[job.id]} compact />
+                    ) : null}
                     <p className="mt-3 text-sm leading-6 text-white/68">{job.promptText}</p>
                   </div>
                 ))
@@ -521,6 +576,97 @@ export function DashboardShell({
         </div>
       </section>
     </main>
+  );
+}
+
+function InitialGenerationStatus({
+  job,
+  progress,
+  isStarting
+}: {
+  job?: {
+    status: string;
+    failureReason: string | null;
+  };
+  progress?: number;
+  isStarting: boolean;
+}) {
+  const failed = job?.status === "failed";
+  const hasMeasuredProgress = !isStarting && typeof progress === "number";
+  const title = failed ? "First video generation failed" : "Generating your first video";
+  const stage = isStarting
+    ? "Starting the generation job…"
+    : job?.status === "queued"
+      ? "Queued with OpenAI — waiting for rendering to begin…"
+      : "OpenAI is rendering your first loop…";
+
+  return (
+    <section
+      aria-live="polite"
+      aria-busy={!failed}
+      className={`panel relative mt-8 overflow-hidden border p-6 sm:p-8 ${
+        failed ? "border-ember/35 bg-ember/8" : "border-plasma/25 bg-plasma/[0.07]"
+      }`}
+    >
+      {!failed ? (
+        <div aria-hidden="true" className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-plasma/15 blur-3xl" />
+      ) : null}
+      <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-4">
+          {!failed ? (
+            <span aria-hidden="true" className="mt-1 h-8 w-8 shrink-0 animate-spin rounded-full border-[3px] border-plasma/20 border-t-plasma" />
+          ) : (
+            <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ember/15 text-lg text-ember">!</span>
+          )}
+          <div>
+            <p className={`font-mono text-[11px] uppercase tracking-[0.3em] ${failed ? "text-ember" : "text-plasma"}`}>
+              Initial generation
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold text-white">{title}</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-7 text-white/70">
+              {failed
+                ? job?.failureReason || "OpenAI could not finish this render. Try restarting the session to queue it again."
+                : `${stage} You can keep this dashboard open; the first video will load automatically when it is ready.`}
+            </p>
+          </div>
+        </div>
+
+        {!failed ? (
+          <div className="shrink-0 text-left sm:text-right">
+            <p className="text-4xl font-semibold tabular-nums text-white">
+              {hasMeasuredProgress ? `${progress}%` : "Working"}
+            </p>
+            <p className="mt-2 text-xs uppercase tracking-[0.22em] text-white/45">
+              {hasMeasuredProgress ? "reported by OpenAI" : "waiting for first update"}
+            </p>
+          </div>
+        ) : null}
+      </div>
+
+      {!failed ? <GenerationProgressBar progress={hasMeasuredProgress ? progress : undefined} /> : null}
+    </section>
+  );
+}
+
+function GenerationProgressBar({ progress, compact = false }: { progress?: number; compact?: boolean }) {
+  const hasProgress = typeof progress === "number";
+
+  return (
+    <div
+      role="progressbar"
+      aria-label="Video generation progress"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={hasProgress ? progress : undefined}
+      className={`${compact ? "mt-3 h-1.5" : "mt-7 h-2.5"} overflow-hidden rounded-full bg-black/35`}
+    >
+      <div
+        className={`h-full rounded-full bg-gradient-to-r from-tide via-plasma to-haze transition-[width] duration-700 ${
+          hasProgress ? "" : "w-1/3 animate-pulse"
+        }`}
+        style={hasProgress ? { width: `${progress}%` } : undefined}
+      />
+    </div>
   );
 }
 

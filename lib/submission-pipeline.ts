@@ -378,9 +378,17 @@ export async function reconcilePendingRenderJobs(sessionId: string) {
     }
   });
 
+  const updates = [];
+
   for (const job of jobs) {
-    await reconcileRenderJob(job.id);
+    const update = await reconcileRenderJob(job.id);
+
+    updates.push({
+      id: job.id,
+      status: update?.status ?? job.status,
+      progress: update?.progress ?? null
+    });
   }
 
-  return jobs.length;
+  return updates;
 }

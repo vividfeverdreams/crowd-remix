@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { getEffectiveOpenAiApiKeyForUser } from "@/lib/openai-key-store";
+import { normalizeVideoProgress } from "@/lib/render-progress";
 import { persistVideoAsset, getDemoLoopUrl } from "@/lib/storage";
 
 type StartRenderInput = {
@@ -22,6 +23,14 @@ type StartedRender =
       kind: "live";
       videoId: string;
     };
+
+type OpenAiVideoStatus = {
+  status: "queued" | "in_progress" | "completed" | "failed";
+  progress?: number;
+  error?: {
+    message?: string;
+  } | null;
+};
 
 export async function startVideoRender(input: StartRenderInput): Promise<StartedRender> {
   if (!input.openAiApiKey) {
@@ -99,7 +108,10 @@ export async function reconcileRenderJob(renderJobId: string) {
       storagePath: null,
       sourceVideoId: renderJob.openaiVideoId ?? `demo_${renderJob.id}`
     });
-    return "completed";
+    return {
+      status: "completed" as const,
+      progress: 100
+    };
   }
 
   if (!renderJob.openaiVideoId) {
@@ -135,10 +147,13 @@ export async function reconcileRenderJob(renderJobId: string) {
       });
     }
 
-    return "failed";
+    return {
+      status: "failed" as const,
+      progress: 0
+    };
   }
 
-  const status = await callOpenAiVideoApi<{ status: "queued" | "in_progress" | "completed" | "failed" }>(
+  const status = await callOpenAiVideoApi<OpenAiVideoStatus>(
     `https://api.openai.com/v1/videos/${renderJob.openaiVideoId}`,
     apiKey
   );
@@ -163,7 +178,10 @@ export async function reconcileRenderJob(renderJobId: string) {
       sourceVideoId: renderJob.openaiVideoId
     });
 
-    return "completed";
+    return {
+      status: "completed" as const,
+      progress: 100
+    };
   }
 
   if (status.status === "failed") {
@@ -173,12 +191,15 @@ export async function reconcileRenderJob(renderJobId: string) {
       },
       data: {
         status: "failed",
-        failureReason: "Sora reported a failed render.",
+        failureReason: status.error?.message?.trim() || "Sora reported a failed render.",
         lastPolledAt: new Date()
       }
     });
 
-    return "failed";
+    return {
+      status: "failed" as const,
+      progress: null
+    };
   }
 
   await db.renderJob.update({
@@ -191,7 +212,10 @@ export async function reconcileRenderJob(renderJobId: string) {
     }
   });
 
-  return status.status;
+  return {
+    status: status.status,
+    progress: typeof status.progress === "number" ? normalizeVideoProgress(status.progress) : null
+  };
 }
 
 async function markRenderJobReady(

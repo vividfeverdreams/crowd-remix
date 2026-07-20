@@ -42,10 +42,11 @@ export async function POST(_request: Request, { params }: ReconcileRouteProps) {
     );
   }
 
-  const count = await reconcilePendingRenderJobs(sessionId);
+  const jobs = await reconcilePendingRenderJobs(sessionId);
 
   return NextResponse.json({
     ok: true,
-    count
+    count: jobs.length,
+    jobs
   });
 }
