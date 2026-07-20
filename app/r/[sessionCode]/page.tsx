@@ -41,7 +41,7 @@ export default async function PublicSubmissionPage({ params }: PublicRouteProps)
           </p>
         </div>
 
-        <div className="grid gap-8 px-6 py-8 sm:px-8 lg:grid-cols-[1fr_0.8fr]">
+        <div className="px-6 py-8 sm:px-8">
           <div className="space-y-4">
             {intakeDisabled ? (
               <div className="rounded-4xl border border-amber-300/20 bg-amber-300/8 px-5 py-4">
@@ -56,25 +56,6 @@ export default async function PublicSubmissionPage({ params }: PublicRouteProps)
               disabledMessage={intakeMessage}
             />
           </div>
-
-          <aside className="rounded-4xl border border-white/10 bg-black/20 p-5">
-            <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-white/45">Visual DNA</p>
-            <p className="mt-4 text-sm leading-7 text-white/75">{session.creativeBible}</p>
-
-            <div className="mt-6 space-y-3 text-sm text-white/70">
-              <div className="rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                {session.allowedMotifs
-                  ? `Allowed motifs: ${session.allowedMotifs}`
-                  : "Motifs are open-ended—suggest anything that fits the visual world."}
-              </div>
-              <div className="rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                Palette: {session.colorPalette}
-              </div>
-              <div className="rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                Venue-safe mode is on.
-              </div>
-            </div>
-          </aside>
         </div>
       </div>
     </main>
