@@ -7,6 +7,7 @@ import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
 import { normalizeVideoProgress } from "@/lib/render-progress";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
+import { useShowQrOverlay } from "@/lib/use-show-qr-overlay";
 import { formatRelativeTime } from "@/lib/utils";
 
 type DashboardShellProps = {
@@ -31,6 +32,7 @@ export function DashboardShell({
   const openAiStatus = initialOpenAiStatus;
 
   const session = deferredSnapshot.session;
+  const qrOverlay = useShowQrOverlay(session.id);
   const playback = session.playbackState;
   const publicLink = `/r/${session.code}`;
   const showLink = `/show/${session.id}`;
@@ -436,6 +438,30 @@ export function DashboardShell({
                   ? "Skip To Next will unlock after the current render finishes and loads as the next loop."
                   : "No next loop is ready yet. Queue a fallback remix or wait for a crowd render to finish."}
             </p>
+
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-4xl border border-white/10 bg-white/[0.04] px-5 py-4">
+              <div className="max-w-xl">
+                <p className="text-sm font-semibold text-white/88">Audience QR overlay</p>
+                <p className="mt-1 text-xs leading-5 text-white/52">
+                  Show a scannable link to {publicLink} on the pop-out display and live monitor.
+                </p>
+              </div>
+
+              <label className="inline-flex cursor-pointer items-center gap-3">
+                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-white/48">
+                  {qrOverlay.visible ? "On" : "Off"}
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={qrOverlay.visible}
+                  onChange={(event) => qrOverlay.setVisible(event.target.checked)}
+                  className="peer sr-only"
+                />
+                <span className="relative h-7 w-12 rounded-full border border-white/15 bg-black/40 transition after:absolute after:left-1 after:top-1 after:h-5 after:w-5 after:rounded-full after:bg-white/65 after:transition-all after:content-[''] peer-checked:border-plasma/50 peer-checked:bg-plasma/20 peer-checked:after:translate-x-5 peer-checked:after:bg-plasma peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-plasma" />
+                <span className="sr-only">Show audience QR code on the show output</span>
+              </label>
+            </div>
           </div>
 
           <div className="panel p-6">

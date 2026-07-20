@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { decideAutomaticCueTransition, getTypewriterChunkSize } from "@/lib/remix-transition";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useAudioReactiveVisualEffect } from "@/lib/use-audio-reactive-visual-effect";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { useShowAudioSync } from "@/lib/use-show-audio-sync";
+import { useShowQrOverlay } from "@/lib/use-show-qr-overlay";
 
 type ShowScreenProps = {
   initialSnapshot: NonNullable<SessionSnapshot>;
@@ -20,9 +22,11 @@ type QueuedTransition = {
 export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenProps) {
   const snapshot = useSessionSnapshot(initialSnapshot);
   const audioSync = useShowAudioSync(initialSnapshot.session.id);
+  const qrOverlay = useShowQrOverlay(initialSnapshot.session.id);
   const [fadeNext, setFadeNext] = useState(false);
   const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
   const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
+  const [submissionUrl, setSubmissionUrl] = useState("");
   const visualTargetRef = useRef<HTMLDivElement>(null);
   const nextVideoRef = useRef<HTMLVideoElement>(null);
   const promptRevealRef = useRef<QueuedTransition | null>(null);
@@ -39,6 +43,10 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
   const nextAssetUrl = resolvePlaybackUrl(nextAsset?.publicUrl ?? null);
   const shouldRenderNext = Boolean(nextAssetUrl);
   const crossfadeDurationMs = Math.max(400, Math.round((playback?.crossfadeSeconds ?? 2) * 1000));
+
+  useEffect(() => {
+    setSubmissionUrl(new URL(`/r/${session.code}`, window.location.origin).toString());
+  }, [session.code]);
 
   useAudioReactiveVisualEffect({
     active: audioSync.connected,
@@ -219,7 +227,43 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
       {promptReveal ? (
         <PromptTypewriterOverlay promptText={promptReveal.promptText} onComplete={finishPromptReveal} />
       ) : null}
+
+      {qrOverlay.visible && submissionUrl ? (
+        <AudienceQrOverlay submissionUrl={submissionUrl} />
+      ) : null}
     </main>
+  );
+}
+
+function AudienceQrOverlay({ submissionUrl }: { submissionUrl: string }) {
+  const displayUrl = submissionUrl.replace(/^https?:\/\//, "").replace(/\/$/, "");
+
+  return (
+    <aside className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-[clamp(1.5rem,5vw,5rem)]">
+      <div className="flex w-full max-w-6xl flex-col items-center gap-7 rounded-[2.5rem] border border-white/15 bg-ink/95 p-[clamp(1.5rem,4vw,4rem)] shadow-2xl backdrop-blur-xl sm:flex-row sm:justify-between sm:gap-12">
+        <div className="max-w-xl text-center sm:text-left">
+          <p className="font-mono text-[10px] uppercase tracking-[0.38em] text-plasma sm:text-xs">Shape the next visual</p>
+          <h2 className="mt-5 text-[clamp(2rem,5vw,5rem)] font-semibold leading-[0.98] text-white">
+            Scan to remix the show.
+          </h2>
+          <p className="mt-5 text-[clamp(0.9rem,1.8vw,1.35rem)] leading-relaxed text-white/68">
+            Send your visual idea straight to the live queue.
+          </p>
+          <p className="mt-5 break-all font-mono text-[clamp(0.7rem,1.4vw,1rem)] text-plasma/85">{displayUrl}</p>
+        </div>
+
+        <div className="w-[min(62vw,24rem)] shrink-0 rounded-[2rem] bg-white p-[clamp(0.8rem,2vw,1.4rem)] shadow-[0_0_80px_rgba(16,214,160,0.2)] sm:w-[min(34vw,26rem)]">
+          <QRCodeSVG
+            value={submissionUrl}
+            title="QR code for the audience remix submission page"
+            level="H"
+            bgColor="#ffffff"
+            fgColor="#091018"
+            className="h-auto w-full"
+          />
+        </div>
+      </div>
+    </aside>
   );
 }
 
