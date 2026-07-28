@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  defaultVideoDurationSeconds,
+  isVideoDurationSeconds
+} from "@/lib/video-duration";
 
 function requiredText(label: string, maxLength: number) {
   return z
@@ -38,7 +42,22 @@ export const sessionFormSchema = z.object({
   imageReferenceUrl: optionalUrl,
   smsNumber: optionalText,
   venueSafeMode: z.boolean().default(true),
-  autoSelectEnabled: z.boolean().default(true)
+  artistControlEnabled: z.boolean().default(true),
+  autoSelectEnabled: z.boolean().default(true),
+  videoDurationSeconds: z
+    .number()
+    .int("Video length must be a whole number of seconds.")
+    .refine(isVideoDurationSeconds, {
+      message: "Video length must be 4, 6, or 8 seconds."
+    })
+    .default(defaultVideoDurationSeconds),
+  submissionRateLimitEnabled: z.boolean().default(false),
+  submissionRateLimitCount: z
+    .number()
+    .int("Submission limit must be a whole number.")
+    .min(1, "Submission limit must be at least 1.")
+    .max(20, "Submission limit must be 20 or fewer.")
+    .default(3)
 });
 
 export const sessionIdeaSchema = z.object({
@@ -78,7 +97,16 @@ export const sessionPrefillSchema = z.object({
 
 export const publicSubmissionSchema = z.object({
   prompt: z.string().trim().min(4).max(600),
-  senderLabel: z.string().max(80).optional()
+  senderLabel: z
+    .string()
+    .trim()
+    .min(2, "Choose a nickname with at least 2 characters.")
+    .max(24, "Keep your nickname to 24 characters or fewer.")
+    .regex(
+      /^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u,
+      "Use letters, numbers, spaces, dots, dashes, or underscores in your nickname."
+    ),
+  participantToken: z.string().trim().min(16).max(200)
 });
 
 export const inboundSmsSchema = z.object({
@@ -88,7 +116,36 @@ export const inboundSmsSchema = z.object({
   MessageSid: z.string().optional()
 });
 
-export const controlSchema = z.object({
-  action: z.enum(["pause-selection", "resume-selection", "skip-next", "fallback-remix", "stop-session"]),
-  value: z.boolean().optional()
-});
+export const controlSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.enum(["pause-selection", "resume-selection", "skip-next", "fallback-remix", "stop-session"])
+  }),
+  z.object({
+    action: z.literal("cue-generation"),
+    assetId: z.string().trim().min(1).max(120)
+  }),
+  z.object({
+    action: z.literal("set-qr-overlay"),
+    value: z.boolean()
+  }),
+  z.object({
+    action: z.literal("set-wordmark-overlay"),
+    value: z.boolean()
+  }),
+  z.object({
+    action: z.literal("set-wordmark-opacity"),
+    value: z.number().min(0).max(1)
+  }),
+  z.object({
+    action: z.literal("set-wordmark-size"),
+    value: z.number().min(0.3).max(1.5)
+  }),
+  z.object({
+    action: z.literal("set-wordmark-audio-reactive-only"),
+    value: z.boolean()
+  }),
+  z.object({
+    action: z.literal("set-progress-overlay"),
+    value: z.boolean()
+  })
+]);

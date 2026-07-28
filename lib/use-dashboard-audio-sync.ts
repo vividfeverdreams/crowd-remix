@@ -6,6 +6,7 @@ import {
   getAudioSyncChannelName,
   type AudioSyncCueMessage,
   type AudioSyncFrameMessage,
+  type AudioSyncMessage,
   type AudioSyncStateMessage,
   type AudioSyncTakeMessage
 } from "@/lib/audio-sync-channel";
@@ -14,6 +15,7 @@ import type { AudioCueEvent, AudioReactiveLevels } from "@/lib/use-audio-reactiv
 
 type UseDashboardAudioSyncOptions = {
   sessionId: string;
+  relayToken: string;
   connected: boolean;
   intensity: number;
   autoTakeOnCue: boolean;
@@ -22,10 +24,13 @@ type UseDashboardAudioSyncOptions = {
   levelsRef: MutableRefObject<AudioReactiveLevels>;
 };
 
-const frameIntervalMs = 50;
+const relayFrameIntervalMs = 100;
+const relayFailureThreshold = 3;
+const relayRetryBackoffMs = 5000;
 
 export function useDashboardAudioSync({
   sessionId,
+  relayToken,
   connected,
   intensity,
   autoTakeOnCue,
@@ -35,6 +40,11 @@ export function useDashboardAudioSync({
 }: UseDashboardAudioSyncOptions) {
   const channelRef = useRef<BroadcastChannel | null>(null);
   const sourceIdRef = useRef("");
+  const relayTokenRef = useRef(relayToken);
+  const relayTokenRefreshRef = useRef<Promise<string | null> | null>(null);
+  const relayFrameInFlightRef = useRef(false);
+  const relayFailureCountRef = useRef(0);
+  const relayRetryAfterRef = useRef(0);
   const intensityRef = useRef(intensity);
   const autoTakeOnCueRef = useRef(autoTakeOnCue);
   const effectRef = useRef(effect);
@@ -44,36 +54,140 @@ export function useDashboardAudioSync({
   effectRef.current = effect;
 
   useEffect(() => {
-    if (!("BroadcastChannel" in window)) {
-      setSupported(false);
-      return;
+    relayTokenRef.current = relayToken;
+  }, [relayToken]);
+
+  const refreshRelayToken = useCallback(() => {
+    if (relayTokenRefreshRef.current) {
+      return relayTokenRefreshRef.current;
     }
 
+    const refreshRequest = fetch(`/api/sessions/${sessionId}/audio-sync`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "same-origin"
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          return null;
+        }
+
+        const payload = (await response.json().catch(() => null)) as {
+          relayToken?: unknown;
+        } | null;
+        const nextToken = typeof payload?.relayToken === "string" ? payload.relayToken : null;
+
+        if (nextToken) {
+          relayTokenRef.current = nextToken;
+        }
+
+        return nextToken;
+      })
+      .catch(() => null)
+      .finally(() => {
+        relayTokenRefreshRef.current = null;
+      });
+
+    relayTokenRefreshRef.current = refreshRequest;
+    return refreshRequest;
+  }, [sessionId]);
+
+  const relayMessage = useCallback(
+    async (message: AudioSyncMessage, replaceable: boolean) => {
+      if (replaceable && Date.now() < relayRetryAfterRef.current) {
+        return;
+      }
+
+      if (replaceable && relayFrameInFlightRef.current) {
+        return;
+      }
+
+      if (replaceable) {
+        relayFrameInFlightRef.current = true;
+      }
+
+      try {
+        let response = await postRelayMessage(sessionId, relayTokenRef.current, message);
+
+        if (response.status === 401) {
+          const nextToken = await refreshRelayToken();
+
+          if (nextToken) {
+            response = await postRelayMessage(sessionId, nextToken, message);
+          }
+        }
+
+        if (!response.ok) {
+          throw new Error(`Audio relay rejected the update with ${response.status}.`);
+        }
+
+        relayFailureCountRef.current = 0;
+        relayRetryAfterRef.current = 0;
+        setSupported(true);
+      } catch {
+        relayFailureCountRef.current += 1;
+
+        if (relayFailureCountRef.current >= relayFailureThreshold) {
+          relayRetryAfterRef.current = Date.now() + relayRetryBackoffMs;
+          setSupported(false);
+        }
+      } finally {
+        if (replaceable) {
+          relayFrameInFlightRef.current = false;
+        }
+      }
+    },
+    [refreshRelayToken, sessionId]
+  );
+
+  const sendMessage = useCallback(
+    (message: AudioSyncMessage, replaceable = false) => {
+      const channel = channelRef.current;
+
+      if (channel) {
+        postLocalMessage(channel, message);
+      }
+
+      void relayMessage(message, replaceable);
+    },
+    [relayMessage]
+  );
+
+  useEffect(() => {
     const sourceId = createSourceId();
-    const channel = new BroadcastChannel(getAudioSyncChannelName(sessionId));
     sourceIdRef.current = sourceId;
-    channelRef.current = channel;
+
+    if ("BroadcastChannel" in window) {
+      channelRef.current = new BroadcastChannel(getAudioSyncChannelName(sessionId));
+    }
+
     setSupported(true);
 
     return () => {
-      postMessage(channel, {
+      const message: AudioSyncStateMessage = {
         ...createAudioSyncBase(sessionId, sourceId),
         type: "state",
         connected: false,
         intensity: intensityRef.current,
         autoTakeOnCue: autoTakeOnCueRef.current,
         effect: effectRef.current
-      });
-      channel.close();
-      channelRef.current = null;
+      };
+
+      if (channelRef.current) {
+        postLocalMessage(channelRef.current, message);
+        channelRef.current.close();
+        channelRef.current = null;
+      }
+
+      void postRelayMessage(sessionId, relayTokenRef.current, message, true).catch(() => undefined);
+      sourceIdRef.current = "";
     };
   }, [sessionId]);
 
   useEffect(() => {
-    const channel = channelRef.current;
     const sourceId = sourceIdRef.current;
 
-    if (!channel || !sourceId) {
+    if (!sourceId) {
       return;
     }
 
@@ -85,8 +199,8 @@ export function useDashboardAudioSync({
       autoTakeOnCue,
       effect
     };
-    postMessage(channel, message);
-  }, [autoTakeOnCue, connected, effect, intensity, sessionId]);
+    sendMessage(message);
+  }, [autoTakeOnCue, connected, effect, intensity, sendMessage, sessionId]);
 
   useEffect(() => {
     if (!connected) {
@@ -97,10 +211,9 @@ export function useDashboardAudioSync({
     let lastFrameAt = 0;
 
     const broadcastFrame = (atMs: number) => {
-      const channel = channelRef.current;
       const sourceId = sourceIdRef.current;
 
-      if (channel && sourceId && atMs - lastFrameAt >= frameIntervalMs) {
+      if (sourceId && atMs - lastFrameAt >= relayFrameIntervalMs) {
         lastFrameAt = atMs;
         const message: AudioSyncFrameMessage = {
           ...createAudioSyncBase(sessionId, sourceId),
@@ -111,7 +224,7 @@ export function useDashboardAudioSync({
           effect,
           levels: levelsRef.current
         };
-        postMessage(channel, message);
+        sendMessage(message, true);
       }
 
       animationFrame = window.requestAnimationFrame(broadcastFrame);
@@ -122,13 +235,12 @@ export function useDashboardAudioSync({
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [autoTakeOnCue, connected, effect, intensity, levelsRef, sessionId]);
+  }, [autoTakeOnCue, connected, effect, intensity, levelsRef, sendMessage, sessionId]);
 
   useEffect(() => {
-    const channel = channelRef.current;
     const sourceId = sourceIdRef.current;
 
-    if (!channel || !sourceId || !lastCue) {
+    if (!sourceId || !lastCue) {
       return;
     }
 
@@ -138,14 +250,13 @@ export function useDashboardAudioSync({
       eventId: `${sourceId}:${lastCue.id}:${lastCue.occurredAt}`,
       cue: lastCue.kind
     };
-    postMessage(channel, message);
-  }, [lastCue, sessionId]);
+    sendMessage(message);
+  }, [lastCue, sendMessage, sessionId]);
 
   const sendManualTake = useCallback(() => {
-    const channel = channelRef.current;
     const sourceId = sourceIdRef.current;
 
-    if (!channel || !sourceId) {
+    if (!sourceId || !supported) {
       return false;
     }
 
@@ -155,9 +266,9 @@ export function useDashboardAudioSync({
       type: "take",
       eventId: `${sourceId}:manual:${sentAt}`
     };
-    postMessage(channel, message);
+    sendMessage(message);
     return true;
-  }, [sessionId]);
+  }, [sendMessage, sessionId, supported]);
 
   return {
     sendManualTake,
@@ -173,10 +284,28 @@ function createSourceId() {
   return `dashboard-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function postMessage(channel: BroadcastChannel, message: AudioSyncStateMessage | AudioSyncFrameMessage | AudioSyncCueMessage | AudioSyncTakeMessage) {
+function postLocalMessage(channel: BroadcastChannel, message: AudioSyncMessage) {
   try {
     channel.postMessage(message);
   } catch {
     // A closing projection window should never interrupt dashboard audio analysis.
   }
+}
+
+function postRelayMessage(
+  sessionId: string,
+  relayToken: string,
+  message: AudioSyncMessage,
+  keepalive = false
+) {
+  return fetch(`/api/sessions/${sessionId}/audio-sync`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${relayToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(message),
+    cache: "no-store",
+    keepalive
+  });
 }

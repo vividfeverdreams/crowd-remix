@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { publicSubmissionSchema, sessionFormSchema, sessionIdeaSchema, sessionPrefillSchema } from "@/lib/schemas";
+import {
+  controlSchema,
+  publicSubmissionSchema,
+  sessionFormSchema,
+  sessionIdeaSchema,
+  sessionPrefillSchema
+} from "@/lib/schemas";
 
 const validSession = {
   name: "A",
@@ -14,7 +20,11 @@ const validSession = {
   imageReferenceUrl: "",
   smsNumber: "",
   venueSafeMode: true,
-  autoSelectEnabled: true
+  artistControlEnabled: true,
+  autoSelectEnabled: true,
+  videoDurationSeconds: 8,
+  submissionRateLimitEnabled: false,
+  submissionRateLimitCount: 3
 };
 
 describe("sessionFormSchema", () => {
@@ -64,6 +74,106 @@ describe("sessionFormSchema", () => {
     if (result.success) {
       expect(result.data.allowedMotifs).toBe("");
     }
+  });
+
+  it("accepts artist control being disabled for raw crowd prompts", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      artistControlEnabled: false
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.artistControlEnabled).toBe(false);
+    }
+  });
+
+  it("accepts a supported custom video length", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      videoDurationSeconds: 6
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.videoDurationSeconds).toBe(6);
+    }
+  });
+
+  it("keeps existing clients at the eight-second default", () => {
+    const {
+      videoDurationSeconds: _videoDurationSeconds,
+      ...legacySession
+    } = validSession;
+    const result = sessionFormSchema.safeParse(legacySession);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.videoDurationSeconds).toBe(8);
+    }
+  });
+
+  it("rejects an unsupported video length", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      videoDurationSeconds: 5
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(
+        "Video length must be 4, 6, or 8 seconds."
+      );
+    }
+  });
+
+  it("keeps artist control on by default for existing clients", () => {
+    const { artistControlEnabled: _artistControlEnabled, ...legacySession } = validSession;
+    const result = sessionFormSchema.safeParse(legacySession);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.artistControlEnabled).toBe(true);
+    }
+  });
+
+  it("keeps the device submission limit off by default", () => {
+    const {
+      submissionRateLimitEnabled: _submissionRateLimitEnabled,
+      submissionRateLimitCount: _submissionRateLimitCount,
+      ...legacySession
+    } = validSession;
+    const result = sessionFormSchema.safeParse(legacySession);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.submissionRateLimitEnabled).toBe(false);
+      expect(result.data.submissionRateLimitCount).toBe(3);
+    }
+  });
+
+  it("accepts a configurable ten-minute device submission limit", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      submissionRateLimitEnabled: true,
+      submissionRateLimitCount: 7
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.submissionRateLimitEnabled).toBe(true);
+      expect(result.data.submissionRateLimitCount).toBe(7);
+    }
+  });
+
+  it("rejects an invalid device submission limit", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      submissionRateLimitEnabled: true,
+      submissionRateLimitCount: 0
+    });
+
+    expect(result.success).toBe(false);
   });
 });
 
@@ -123,15 +233,93 @@ describe("sessionPrefillSchema", () => {
 describe("publicSubmissionSchema", () => {
   it("accepts a detailed visual idea longer than the old 240-character limit", () => {
     const prompt = `Shift the whole visual world into a moonlit paper city with slow lanterns and soft shadows. ${"Add layered texture and gentle movement. ".repeat(6)}`;
-    const result = publicSubmissionSchema.safeParse({ prompt });
+    const result = publicSubmissionSchema.safeParse({
+      prompt,
+      senderLabel: "Neon Shark",
+      participantToken: "device-token-1234567890"
+    });
 
     expect(prompt.length).toBeGreaterThan(240);
     expect(result.success).toBe(true);
   });
 
   it("still limits excessively long audience requests", () => {
-    const result = publicSubmissionSchema.safeParse({ prompt: "x".repeat(601) });
+    const result = publicSubmissionSchema.safeParse({
+      prompt: "x".repeat(601),
+      senderLabel: "Neon Shark",
+      participantToken: "device-token-1234567890"
+    });
 
     expect(result.success).toBe(false);
+  });
+
+  it("requires a screen-safe nickname and persistent device token", () => {
+    expect(
+      publicSubmissionSchema.safeParse({
+        prompt: "Make the water glow",
+        senderLabel: "Neon Shark",
+        participantToken: "device-token-1234567890"
+      }).success
+    ).toBe(true);
+    expect(
+      publicSubmissionSchema.safeParse({
+        prompt: "Make the water glow",
+        senderLabel: "<script>",
+        participantToken: "short"
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe("controlSchema", () => {
+  it("accepts every wordmark display control", () => {
+    expect(
+      controlSchema.safeParse({
+        action: "set-wordmark-overlay",
+        value: true
+      }).success
+    ).toBe(true);
+    expect(
+      controlSchema.safeParse({
+        action: "set-wordmark-opacity",
+        value: 0.55
+      }).success
+    ).toBe(true);
+    expect(
+      controlSchema.safeParse({
+        action: "set-wordmark-size",
+        value: 1.2
+      }).success
+    ).toBe(true);
+    expect(
+      controlSchema.safeParse({
+        action: "set-wordmark-audio-reactive-only",
+        value: true
+      }).success
+    ).toBe(true);
+    expect(
+      controlSchema.safeParse({
+        action: "set-progress-overlay",
+        value: true
+      }).success
+    ).toBe(true);
+  });
+
+  it("rejects out-of-range wordmark opacity", () => {
+    expect(
+      controlSchema.safeParse({
+        action: "set-wordmark-opacity",
+        value: 1.1
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects out-of-range wordmark size", () => {
+    expect(
+      controlSchema.safeParse({
+        action: "set-wordmark-size",
+        value: 1.6
+      }).success
+    ).toBe(false);
   });
 });

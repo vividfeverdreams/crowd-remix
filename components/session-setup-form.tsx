@@ -4,6 +4,11 @@ import { FormEvent, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { generateSessionDraft } from "@/app/dashboard/new/actions";
 import { sessionFormSchema, sessionIdeaSchema } from "@/lib/schemas";
+import {
+  defaultVideoDurationSeconds,
+  videoDurationOptions,
+  type VideoDurationSeconds
+} from "@/lib/video-duration";
 
 const blankForm = {
   name: "",
@@ -18,7 +23,11 @@ const blankForm = {
   imageReferenceUrl: "",
   smsNumber: "",
   venueSafeMode: true,
-  autoSelectEnabled: true
+  artistControlEnabled: true,
+  autoSelectEnabled: true,
+  videoDurationSeconds: defaultVideoDurationSeconds,
+  submissionRateLimitEnabled: false,
+  submissionRateLimitCount: 3
 };
 
 type FlowStep = "idea" | "details";
@@ -26,6 +35,12 @@ type DraftSource = "ai" | "manual";
 
 const inputClassName =
   "w-full rounded-3xl border border-white/10 bg-black/30 px-4 py-3 outline-none transition placeholder:text-white/30 focus:border-plasma";
+
+const videoDurationDescriptions: Record<VideoDurationSeconds, string> = {
+  4: "Quick turnover",
+  6: "Balanced pacing",
+  8: "Longest visual arc"
+};
 
 export function SessionSetupForm() {
   const router = useRouter();
@@ -376,9 +391,129 @@ export function SessionSetupForm() {
               placeholder="https://..."
             />
           </label>
+
+          <fieldset className="lg:col-span-2">
+            <legend className="text-sm font-medium text-white/80">Video length</legend>
+            <p id="video-duration-help" className="mt-2 text-sm leading-6 text-white/50">
+              Applies to the opening seed and every crowd remix in this session.
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              {videoDurationOptions.map((duration) => (
+                <label
+                  key={duration}
+                  className={`cursor-pointer rounded-3xl border px-4 py-4 transition focus-within:ring-2 focus-within:ring-plasma/70 ${
+                    form.videoDurationSeconds === duration
+                      ? "border-plasma/60 bg-plasma/10"
+                      : "border-white/10 bg-black/20 hover:border-white/20"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="videoDurationSeconds"
+                    value={duration}
+                    checked={form.videoDurationSeconds === duration}
+                    aria-describedby="video-duration-help"
+                    onChange={() =>
+                      setForm((current) => ({
+                        ...current,
+                        videoDurationSeconds: duration
+                      }))
+                    }
+                    className="sr-only"
+                  />
+                  <span className="block text-lg font-semibold text-white">{duration} seconds</span>
+                  <span className="mt-1 block text-xs text-white/50">
+                    {videoDurationDescriptions[duration]}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
         </div>
 
-        <div className="mt-6 flex flex-wrap gap-4 text-sm text-white/75">
+        <div className="mt-6 rounded-3xl border border-white/10 bg-white/[0.025] p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-2xl">
+              <p className="font-mono text-xs uppercase tracking-[0.24em] text-plasma">Crowd remix prompting</p>
+              <h3 className="mt-2 text-lg font-semibold text-white">Artist control</h3>
+              <p id="artist-control-help" className="mt-2 text-sm leading-6 text-white/60">
+                {form.artistControlEnabled
+                  ? "On: the application moderates, scores, and rewrites crowd ideas using your Creative Bible, motifs, palette, and motion rules."
+                  : "Off — Raw Prompt Mode: crowd remix prompts bypass artist direction and AI rewriting, then go to Gemini Omni exactly as written. Your base prompt still seeds the show."}
+              </p>
+            </div>
+
+            <label className="inline-flex cursor-pointer items-center gap-3 rounded-full border border-white/15 px-4 py-3 text-sm font-medium text-white/80">
+              <input
+                type="checkbox"
+                role="switch"
+                aria-describedby="artist-control-help"
+                checked={form.artistControlEnabled}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, artistControlEnabled: event.target.checked }))
+                }
+              />
+              {form.artistControlEnabled ? "On" : "Off — Raw prompts"}
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-3xl border border-white/10 bg-white/[0.025] p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-2xl">
+              <p className="font-mono text-xs uppercase tracking-[0.24em] text-plasma">Crowd pacing</p>
+              <h3 className="mt-2 text-lg font-semibold text-white">Limit remixes per device</h3>
+              <p id="submission-rate-limit-help" className="mt-2 text-sm leading-6 text-white/60">
+                {form.submissionRateLimitEnabled
+                  ? `Each device can send up to ${form.submissionRateLimitCount} ${form.submissionRateLimitCount === 1 ? "remix" : "remixes"} within any ten-minute period.`
+                  : "Off: participants can submit as many remixes as they want. Video-safety moderation lockouts still apply separately."}
+              </p>
+            </div>
+
+            <label className="inline-flex cursor-pointer items-center gap-3 rounded-full border border-white/15 px-4 py-3 text-sm font-medium text-white/80">
+              <input
+                type="checkbox"
+                role="switch"
+                aria-describedby="submission-rate-limit-help"
+                checked={form.submissionRateLimitEnabled}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    submissionRateLimitEnabled: event.target.checked
+                  }))
+                }
+              />
+              {form.submissionRateLimitEnabled ? "On" : "Off"}
+            </label>
+          </div>
+
+          <label className="mt-5 block max-w-xs">
+            <span className="mb-2 block text-sm font-medium text-white/80">Remixes per device</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={20}
+              step={1}
+              value={form.submissionRateLimitCount}
+              disabled={!form.submissionRateLimitEnabled}
+              aria-describedby="submission-rate-limit-help"
+              onChange={(event) => {
+                const nextValue = event.currentTarget.valueAsNumber;
+
+                if (Number.isInteger(nextValue)) {
+                  setForm((current) => ({
+                    ...current,
+                    submissionRateLimitCount: Math.min(20, Math.max(1, nextValue))
+                  }));
+                }
+              }}
+              className={`${inputClassName} disabled:cursor-not-allowed disabled:border-white/5 disabled:bg-black/15 disabled:text-white/25`}
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-4 text-sm text-white/75">
           <label className="inline-flex items-center gap-3 rounded-full border border-white/10 px-4 py-3">
             <input
               type="checkbox"
@@ -406,7 +541,9 @@ export function SessionSetupForm() {
 
         <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
           <p className="max-w-2xl text-sm leading-7 text-white/65">
-            The first live render seeds the show from your base prompt. After that, approved crowd prompts are rewritten into focused Sora remixes.
+            {form.artistControlEnabled
+              ? "The first live render seeds the show from your base prompt. After that, approved crowd prompts are rewritten into focused Gemini Omni video edits."
+              : "The first live render still uses your base prompt. After that, crowd remix prompts are sent to Gemini Omni exactly as written, with no artist-direction rewrite."}
           </p>
 
           <button

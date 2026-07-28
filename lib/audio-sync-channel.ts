@@ -37,6 +37,7 @@ export type AudioSyncCueMessage = AudioSyncBaseMessage & {
 export type AudioSyncTakeMessage = AudioSyncBaseMessage & {
   type: "take";
   eventId: string;
+  assetId?: string;
 };
 
 export type AudioSyncMessage =
@@ -99,7 +100,10 @@ export function isAudioSyncMessage(value: unknown): value is AudioSyncMessage {
   }
 
   if (value.type === "take") {
-    return typeof value.eventId === "string";
+    return (
+      typeof value.eventId === "string" &&
+      (value.assetId === undefined || typeof value.assetId === "string")
+    );
   }
 
   return false;

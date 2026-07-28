@@ -10,7 +10,7 @@ export default function HomePage() {
               DREAM SEQUENCE
             </p>
             <p className="mt-2 max-w-sm text-sm text-white/70">
-              Live crowd-controlled Sora remixes for projector and LED wall shows.
+              Live crowd-controlled Gemini Omni remixes for projector and LED wall shows.
             </p>
           </div>
 
@@ -33,7 +33,7 @@ export default function HomePage() {
               </h1>
               <p className="max-w-2xl text-lg leading-8 text-white/72 md:text-xl">
                 DREAM SEQUENCE ingests prompts from SMS and QR form submissions, scores them for
-                safety and vibe match, remixes the active Sora loop, and crossfades into the next
+                safety and vibe match, remixes the active Gemini Omni loop, and crossfades into the next
                 approved visual as soon as it is ready.
               </p>
             </div>
@@ -66,7 +66,7 @@ export default function HomePage() {
                   "SMS + QR intake",
                   "Moderation + anti-spam",
                   "AI ranking + prompt rewrite",
-                  "Sora remix queue",
+                  "Gemini Omni remix queue",
                   "Double-buffer crossfade"
                 ].map((item) => (
                   <div
@@ -84,7 +84,7 @@ export default function HomePage() {
                   Live Constraint
                 </p>
                 <p className="mt-2 text-sm leading-6 text-white/74">
-                  The current loop keeps playing until the next completed Sora remix is ready.
+                  The current loop keeps playing until the next completed Gemini Omni remix is ready.
                 </p>
               </div>
             </div>

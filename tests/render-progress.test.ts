@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeVideoProgress } from "@/lib/render-progress";
 
 describe("normalizeVideoProgress", () => {
-  it("rounds and clamps OpenAI's reported percentage", () => {
+  it("rounds and clamps the provider's reported percentage", () => {
     expect(normalizeVideoProgress(43.6)).toBe(44);
     expect(normalizeVideoProgress(-12)).toBe(0);
     expect(normalizeVideoProgress(108)).toBe(100);

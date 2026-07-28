@@ -66,4 +66,24 @@ describe("audio sync channel protocol", () => {
       })
     ).toBe(false);
   });
+
+  it("accepts a manual take that targets a historical generation", () => {
+    expect(
+      isAudioSyncMessage({
+        ...createAudioSyncBase("session-123", "history-control:user-1"),
+        type: "take",
+        eventId: "history:asset-123:1",
+        assetId: "asset-123"
+      })
+    ).toBe(true);
+
+    expect(
+      isAudioSyncMessage({
+        ...createAudioSyncBase("session-123", "history-control:user-1"),
+        type: "take",
+        eventId: "history:asset-123:2",
+        assetId: 123
+      })
+    ).toBe(false);
+  });
 });

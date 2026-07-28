@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { heuristicAssessment } from "@/lib/ai-assessment";
+import { assessSubmission, heuristicAssessment } from "@/lib/ai-assessment";
 
 describe("heuristicAssessment", () => {
   const session = {
@@ -49,5 +49,74 @@ describe("heuristicAssessment", () => {
     expect(result.decision).toBe("approved");
     expect(result.winningPrompt).toContain("Motifs are open-ended");
     expect(result.winningPrompt).not.toContain("Preferred motifs:");
+  });
+});
+
+describe("assessSubmission in Raw Prompt Mode", () => {
+  const session = {
+    artistName: "Neon Echo",
+    trackName: "Skyline Pressure",
+    creativeBible: "Always render mirrored architecture.",
+    allowedMotifs: "laser lattice",
+    bannedTerms: "celebrity",
+    colorPalette: "teal, ember",
+    motionRules: "steady drift",
+    basePrompt: "Abstract chrome tunnel with elegant motion.",
+    venueSafeMode: true,
+    artistControlEnabled: false
+  };
+
+  it("returns a safe crowd prompt exactly as written without artist-direction rewriting", async () => {
+    const prompt = "Replace everything with hand-painted paper planets and snap zooms";
+    const result = await assessSubmission({
+      submissionText: prompt,
+      session,
+      recentWinningPrompts: []
+    });
+
+    expect(result.decision).toBe("approved");
+    expect(result.winningPrompt).toBe(prompt);
+    expect(result.winningPrompt).not.toContain(session.artistName);
+    expect(result.approvalReason).toContain("exactly as written");
+  });
+
+  it("ignores the artist banned-term list when artist control is off", async () => {
+    const prompt = "A celebrity-shaped constellation made from paper stars";
+    const result = await assessSubmission({
+      submissionText: prompt,
+      session,
+      recentWinningPrompts: []
+    });
+
+    expect(result.decision).toBe("approved");
+    expect(result.winningPrompt).toBe(prompt);
+  });
+
+  it("still enforces the deterministic hard-safety filter when venue-safe mode is on", async () => {
+    const prompt = "Fill the tunnel with gore and paper stars";
+    const result = await assessSubmission({
+      submissionText: prompt,
+      session,
+      recentWinningPrompts: []
+    });
+
+    expect(result.decision).toBe("rejected");
+    expect(result.flags).toContain("blocked-term");
+    expect(result.winningPrompt).toBe(prompt);
+  });
+
+  it("passes prompts through when both artist control and venue-safe mode are off", async () => {
+    const prompt = "Fill the tunnel with gore and paper stars";
+    const result = await assessSubmission({
+      submissionText: prompt,
+      session: {
+        ...session,
+        venueSafeMode: false
+      },
+      recentWinningPrompts: []
+    });
+
+    expect(result.decision).toBe("approved");
+    expect(result.winningPrompt).toBe(prompt);
   });
 });

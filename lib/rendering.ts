@@ -1,15 +1,29 @@
+import { recordAuditEvent } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { getEffectiveOpenAiApiKeyForUser } from "@/lib/openai-key-store";
-import { normalizeVideoProgress } from "@/lib/render-progress";
-import { persistVideoAsset, getDemoLoopUrl } from "@/lib/storage";
+import { getEffectiveGeminiApiKeyForUser } from "@/lib/google-key-store";
+import {
+  getParticipantModerationBlockCount,
+  getParticipantModerationEventType,
+  isParticipantBanned
+} from "@/lib/participant-session";
+import { promoteOldestReadyAsset } from "@/lib/playback-queue";
+import { getDemoLoopUrl, persistVideoAsset } from "@/lib/storage";
+import { formatVideoDuration } from "@/lib/video-duration";
+
+const geminiInteractionsUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
+const geminiApiRevision = "2026-05-20";
+const staleGeminiRenderMs = 2 * 60 * 1_000;
 
 type StartRenderInput = {
   mode: "seed" | "remix";
   prompt: string;
   sourceVideoId?: string | null;
+  sourceVideoUrl?: string | null;
   imageReferenceUrl?: string | null;
-  openAiApiKey?: string | null;
+  remixReferenceImageUrl?: string | null;
+  geminiApiKey?: string | null;
+  durationSeconds?: number | null;
 };
 
 type StartedRender =
@@ -21,19 +35,109 @@ type StartedRender =
     }
   | {
       kind: "live";
-      videoId: string;
+      requestId: string;
+      outputUri: string | null;
+      strategy: "seed" | "stateful_edit" | "uploaded_edit";
     };
 
-type OpenAiVideoStatus = {
-  status: "queued" | "in_progress" | "completed" | "failed";
-  progress?: number;
+type GeminiVideoContent = {
+  type?: "video";
+  data?: string;
+  mime_type?: string;
+  uri?: string;
+};
+
+type GeminiInteraction = {
+  id?: string;
+  status?:
+    | "queued"
+    | "in_progress"
+    | "requires_action"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "incomplete"
+    | "budget_exceeded";
+  output_video?: GeminiVideoContent;
+  steps?: Array<{
+    type?: string;
+    content?: Array<
+      | GeminiVideoContent
+      | {
+          type?: string;
+          text?: string;
+        }
+    >;
+  }>;
   error?: {
+    code?: string | number;
     message?: string;
+    status?: string;
+  } | null;
+  incomplete_details?: unknown;
+};
+
+type GeminiInteractionStreamEvent = {
+  event_type?: string;
+  interaction?: GeminiInteraction;
+  step?: {
+    type?: string;
+    content?: Array<GeminiVideoContent | { type?: string; text?: string }>;
+  };
+  delta?: GeminiVideoContent | { type?: string; text?: string };
+  error?: {
+    code?: string | number;
+    message?: string;
+    status?: string;
   } | null;
 };
 
+export const videoModerationBlockedReason =
+  "Gemini Omni blocked this render during video moderation.";
+const legacyGrokModerationBlockedReason =
+  "Grok Imagine blocked this render during video moderation.";
+
+class GeminiVideoApiError extends Error {
+  code: string | null;
+  moderationBlocked: boolean;
+  status: number;
+
+  constructor(
+    message: string,
+    input: {
+      code?: string | null;
+      moderationBlocked?: boolean;
+      status: number;
+    }
+  ) {
+    super(message);
+    this.name = "GeminiVideoApiError";
+    this.code = input.code ?? null;
+    this.moderationBlocked = input.moderationBlocked ?? false;
+    this.status = input.status;
+  }
+}
+
+export function isVideoModerationError(error: unknown) {
+  return (
+    (error instanceof GeminiVideoApiError && error.moderationBlocked) ||
+    (error instanceof Error && isVideoModerationFailure(null, error.message))
+  );
+}
+
+export function isVideoModerationFailureReason(
+  failureReason: string | null | undefined
+) {
+  return Boolean(
+    failureReason &&
+      [videoModerationBlockedReason, legacyGrokModerationBlockedReason].some(
+        (reason) => failureReason === reason || failureReason.startsWith(`${reason} `)
+      )
+  );
+}
+
 export async function startVideoRender(input: StartRenderInput): Promise<StartedRender> {
-  if (!input.openAiApiKey) {
+  if (!input.geminiApiKey) {
     return {
       kind: "demo",
       videoId: `demo_${Date.now()}`,
@@ -42,40 +146,188 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
     };
   }
 
-  if (input.mode === "seed" || !input.sourceVideoId || !input.sourceVideoId.startsWith("video_")) {
-    const created = await callOpenAiVideoApi<{ id: string }>("https://api.openai.com/v1/videos", input.openAiApiKey, {
-      method: "POST",
-      body: JSON.stringify({
-        model: env.openAiVideoModel,
-        prompt: input.prompt,
-        size: "1280x720",
-        seconds: "8"
-      })
-    });
+  const statefulSourceId =
+    input.mode === "remix" && input.sourceVideoId?.startsWith("v1_")
+      ? input.sourceVideoId
+      : null;
 
-    return {
-      kind: "live",
-      videoId: created.id
+  if (input.mode === "remix" && !statefulSourceId && !input.sourceVideoUrl) {
+    throw new Error("Gemini Omni video editing requires a completed source video.");
+  }
+
+  const requestBody: Record<string, unknown> = {
+    model: env.geminiVideoModel,
+    background: false,
+    store: true,
+    stream: false,
+    response_format: {
+      type: "video",
+      delivery: "uri",
+      ...(input.mode === "seed"
+        ? {
+            aspect_ratio: "16:9",
+            duration: formatVideoDuration(input.durationSeconds)
+          }
+        : {})
+    }
+  };
+
+  // Omni-generated videos should be edited statefully. Google retains the full
+  // prior video context under the interaction ID, avoiding uploaded-video limits.
+  if (input.mode === "remix" && statefulSourceId) {
+    const referenceImage = input.remixReferenceImageUrl
+      ? await fetchRemoteMedia(
+          input.remixReferenceImageUrl,
+          "image/jpeg",
+          "crowd reference image"
+        )
+      : null;
+    const remixPrompt = referenceImage
+      ? [
+          "The attached crowd photo is <IMAGE_REF_0>.",
+          "Treat references to the photo, image, or picture in the crowd request as references to <IMAGE_REF_0>.",
+          "Use it as visual guidance for this edit of the previously generated video.",
+          input.prompt
+        ].join(" ")
+      : input.prompt;
+
+    requestBody.previous_interaction_id = statefulSourceId;
+    requestBody.input = referenceImage
+      ? [
+          {
+            type: "image",
+            data: referenceImage.data,
+            mime_type: referenceImage.mimeType
+          },
+          {
+            type: "text",
+            text: remixPrompt
+          }
+        ]
+      : remixPrompt;
+  } else if (input.mode === "remix" && input.sourceVideoUrl) {
+    const [sourceVideo, referenceImage] = await Promise.all([
+      fetchRemoteMedia(
+        input.sourceVideoUrl,
+        "video/mp4",
+        "source video"
+      ),
+      input.remixReferenceImageUrl
+        ? fetchRemoteMedia(
+            input.remixReferenceImageUrl,
+            "image/jpeg",
+            "crowd reference image"
+          )
+        : Promise.resolve(null)
+    ]);
+    const remixPrompt = referenceImage
+      ? [
+          "The attached crowd photo is <IMAGE_REF_0>.",
+          "Treat references to the photo, image, or picture in the crowd request as references to <IMAGE_REF_0>.",
+          "Use it as visual guidance for the requested transformation while editing the attached source video.",
+          input.prompt
+        ].join(" ")
+      : input.prompt;
+
+    requestBody.input = [
+      {
+        type: "user_input",
+        content: [
+          {
+            type: "video",
+            data: sourceVideo.data,
+            mime_type: sourceVideo.mimeType
+          },
+          ...(referenceImage
+            ? [
+                {
+                  type: "image",
+                  data: referenceImage.data,
+                  mime_type: referenceImage.mimeType
+                }
+              ]
+            : []),
+          {
+            type: "text",
+            text: remixPrompt
+          }
+        ]
+      }
+    ];
+    requestBody.generation_config = {
+      video_config: {
+        task: "edit"
+      }
+    };
+  } else if (input.imageReferenceUrl) {
+    const referenceImage = await fetchRemoteMedia(
+      input.imageReferenceUrl,
+      "image/jpeg",
+      "reference image"
+    );
+
+    requestBody.input = [
+      {
+        type: "image",
+        data: referenceImage.data,
+        mime_type: referenceImage.mimeType
+      },
+      {
+        type: "text",
+        text: input.prompt
+      }
+    ];
+    requestBody.generation_config = {
+      video_config: {
+        task: "image_to_video"
+      }
+    };
+  } else {
+    requestBody.input = input.prompt;
+    requestBody.generation_config = {
+      video_config: {
+        task: "text_to_video"
+      }
     };
   }
 
-  const payload = await callOpenAiVideoApi<{ id: string }>(
-    "https://api.openai.com/v1/videos/edits",
-    input.openAiApiKey,
+  const interaction = await callGeminiVideoApi<GeminiInteraction>(
+    geminiInteractionsUrl,
+    input.geminiApiKey,
     {
       method: "POST",
-      body: JSON.stringify({
-        video: {
-          id: input.sourceVideoId
-        },
-        prompt: input.prompt
-      })
+      body: JSON.stringify(requestBody)
     }
   );
 
+  if (!interaction.id) {
+    throw new Error("Gemini Omni started without returning an interaction ID.");
+  }
+
+  const strategy =
+    input.mode === "seed"
+      ? "seed"
+      : statefulSourceId
+        ? "stateful_edit"
+        : "uploaded_edit";
+  const outputUri = extractVideoOutput(interaction)?.uri ?? null;
+
+  console.info("[render-job] Gemini Omni request completed", {
+    interactionId: interaction.id,
+    mode: input.mode,
+    strategy,
+    durationSeconds:
+      input.mode === "seed"
+        ? formatVideoDuration(input.durationSeconds)
+        : "preserved_from_source",
+    outputUriAvailable: Boolean(outputUri)
+  });
+
   return {
     kind: "live",
-    videoId: payload.id
+    requestId: interaction.id,
+    outputUri,
+    strategy
   };
 }
 
@@ -99,14 +351,14 @@ export async function reconcileRenderJob(renderJobId: string) {
   }
 
   const apiKey = renderJob.session?.userId
-    ? await getEffectiveOpenAiApiKeyForUser(String(renderJob.session.userId))
+    ? await getEffectiveGeminiApiKeyForUser(String(renderJob.session.userId))
     : null;
 
   if (!apiKey) {
     await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
       publicUrl: getDemoLoopUrl(),
       storagePath: null,
-      sourceVideoId: renderJob.openaiVideoId ?? `demo_${renderJob.id}`
+      sourceVideoId: renderJob.providerRequestId ?? `demo_${renderJob.id}`
     });
     return {
       status: "completed" as const,
@@ -114,38 +366,23 @@ export async function reconcileRenderJob(renderJobId: string) {
     };
   }
 
-  if (!renderJob.openaiVideoId) {
-    await db.renderJob.update({
-      where: {
-        id: renderJob.id
-      },
-      data: {
-        status: "failed",
-        failureReason: "Render job never received an OpenAI video id.",
-        lastPolledAt: new Date()
-      }
-    });
+  if (!renderJob.providerRequestId) {
+    const renderAgeMs =
+      renderJob.createdAt instanceof Date
+        ? Date.now() - renderJob.createdAt.getTime()
+        : 0;
 
-    await db.visualAsset.update({
-      where: {
-        id: renderJob.outputAsset.id
-      },
-      data: {
-        status: "failed"
-      }
-    });
-
-    if (renderJob.submissionId) {
-      await db.promptSubmission.update({
-        where: {
-          id: renderJob.submissionId
-        },
-        data: {
-          status: "approved",
-          selectedAt: null
-        }
-      });
+    // The interaction request is synchronous, so the render job can be visible
+    // to the dashboard before startVideoRender has returned and stored its ID.
+    // Give that request time to finish instead of racing reconciliation against it.
+    if (renderAgeMs < staleGeminiRenderMs) {
+      return {
+        status: "queued" as const,
+        progress: null
+      };
     }
+
+    await failRenderJob(renderJob.id, "Render job never received a Gemini interaction ID.");
 
     return {
       status: "failed" as const,
@@ -153,29 +390,141 @@ export async function reconcileRenderJob(renderJobId: string) {
     };
   }
 
-  const status = await callOpenAiVideoApi<OpenAiVideoStatus>(
-    `https://api.openai.com/v1/videos/${renderJob.openaiVideoId}`,
-    apiKey
-  );
+  if (renderJob.providerOutputUri) {
+    try {
+      const completion = await completeGeminiVideoRender(
+        renderJob.providerRequestId,
+        renderJob.providerOutputUri
+      );
 
-  if (status.status === "completed") {
-    const response = await fetch(`https://api.openai.com/v1/videos/${renderJob.openaiVideoId}/content`, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`
+      if (completion === "completed") {
+        return {
+          status: "completed" as const,
+          progress: 100
+        };
+      }
+
+      if (completion === "in_progress") {
+        return {
+          status: "in_progress" as const,
+          progress: null
+        };
+      }
+    } catch (error) {
+      console.warn("[render-job] URI-delivered Gemini video is not ready", {
+        sessionId: renderJob.sessionId,
+        renderJobId: renderJob.id,
+        reason:
+          error instanceof Error
+            ? error.message
+            : "Gemini video retrieval failed."
+      });
+    }
+  }
+
+  let interaction: GeminiInteraction | null;
+
+  try {
+    interaction = await retrieveGeminiVideoInteraction(
+      renderJob.providerRequestId,
+      apiKey
+    );
+  } catch (error) {
+    const failureReason =
+      error instanceof Error
+        ? error.message
+        : "Gemini Omni could not return this render.";
+    const moderationBlocked = isVideoModerationError(error);
+
+    console.error("[render-job] Gemini reconciliation failed", {
+      sessionId: renderJob.sessionId,
+      renderJobId: renderJob.id,
+      providerStatus:
+        error instanceof GeminiVideoApiError ? error.status : null,
+      providerCode:
+        error instanceof GeminiVideoApiError ? error.code : null,
+      failureReason
+    });
+
+    await failRenderJob(
+      renderJob.id,
+      moderationBlocked
+        ? formatVideoModerationFailureReason(failureReason)
+        : failureReason,
+      {
+        moderationBlocked
+      }
+    );
+
+    return {
+      status: "failed" as const,
+      progress: null
+    };
+  }
+
+  if (!interaction) {
+    const staleAfterMs =
+      renderJob.mode === "remix" &&
+      renderJob.providerStrategy !== "stateful_edit"
+        ? 2 * 60 * 1_000
+        : staleGeminiRenderMs;
+
+    if (
+      renderJob.createdAt instanceof Date &&
+      Date.now() - renderJob.createdAt.getTime() >= staleAfterMs
+    ) {
+      const failureReason =
+        "Gemini Omni did not publish a usable result before the recovery timeout.";
+
+      console.warn("[render-job] retiring stale Gemini interaction", {
+        sessionId: renderJob.sessionId,
+        renderJobId: renderJob.id,
+        providerRequestId: renderJob.providerRequestId,
+        ageMs: Date.now() - renderJob.createdAt.getTime()
+      });
+
+      await failRenderJob(renderJob.id, failureReason, {
+        forceRetry: renderJob.providerStrategy !== "stateful_edit"
+      });
+      await recordAuditEvent({
+        type: "render.recovery_timeout",
+        summary: "Retired a stalled Gemini Omni render so the queue could retry",
+        details: renderJob.providerRequestId,
+        sessionId: renderJob.sessionId
+      });
+
+      return {
+        status: "failed" as const,
+        progress: null
+      };
+    }
+
+    await db.renderJob.update({
+      where: {
+        id: renderJob.id
+      },
+      data: {
+        status: "in_progress",
+        lastPolledAt: new Date()
       }
     });
 
-    if (!response.ok) {
-      throw new Error(`Failed to download video content for ${renderJob.openaiVideoId}`);
-    }
+    return {
+      status: "in_progress" as const,
+      progress: null
+    };
+  }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
+  const video = extractVideoOutput(interaction);
+
+  if (video) {
+    const buffer = await resolveVideoBuffer(video, apiKey);
     const saved = await persistVideoAsset(renderJob.outputAsset.id, buffer);
 
     await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
       publicUrl: saved.publicUrl,
       storagePath: saved.storagePath,
-      sourceVideoId: renderJob.openaiVideoId
+      sourceVideoId: interaction.id ?? renderJob.providerRequestId
     });
 
     return {
@@ -184,17 +533,19 @@ export async function reconcileRenderJob(renderJobId: string) {
     };
   }
 
-  if (status.status === "failed") {
-    await db.renderJob.update({
-      where: {
-        id: renderJob.id
-      },
-      data: {
-        status: "failed",
-        failureReason: status.error?.message?.trim() || "Sora reported a failed render.",
-        lastPolledAt: new Date()
+  if (interaction.status === "completed") {
+    const providerError = getInteractionFailureMessage(interaction);
+    const moderationBlocked = isVideoModerationFailure(null, providerError);
+
+    await failRenderJob(
+      renderJob.id,
+      moderationBlocked
+        ? formatVideoModerationFailureReason(providerError)
+        : providerError || "Gemini Omni completed without returning a video.",
+      {
+        moderationBlocked
       }
-    });
+    );
 
     return {
       status: "failed" as const,
@@ -202,20 +553,274 @@ export async function reconcileRenderJob(renderJobId: string) {
     };
   }
 
+  if (
+    interaction.status === "failed" ||
+    interaction.status === "cancelled" ||
+    interaction.status === "incomplete" ||
+    interaction.status === "budget_exceeded" ||
+    interaction.status === "requires_action"
+  ) {
+    const providerError = getInteractionFailureMessage(interaction);
+    const moderationBlocked = isVideoModerationFailure(
+      interaction.error?.code,
+      providerError
+    );
+
+    await failRenderJob(
+      renderJob.id,
+      moderationBlocked
+        ? formatVideoModerationFailureReason(providerError)
+        : providerError ||
+            `Gemini Omni reported a ${interaction.status.replaceAll("_", " ")} render.`,
+      {
+        moderationBlocked
+      }
+    );
+
+    return {
+      status: "failed" as const,
+      progress: null
+    };
+  }
+
+  const mappedStatus = interaction.status === "queued" ? "queued" : "in_progress";
+
   await db.renderJob.update({
     where: {
       id: renderJob.id
     },
     data: {
-      status: status.status,
+      status: mappedStatus,
       lastPolledAt: new Date()
     }
   });
 
   return {
-    status: status.status,
-    progress: typeof status.progress === "number" ? normalizeVideoProgress(status.progress) : null
+    status: mappedStatus,
+    progress: null
   };
+}
+
+export async function failRenderJob(
+  renderJobId: string,
+  failureReason: string,
+  options: {
+    moderationBlocked?: boolean;
+    forceRetry?: boolean;
+  } = {}
+) {
+  const renderJob = await db.renderJob.findUnique({
+    where: {
+      id: renderJobId
+    },
+    select: {
+      id: true,
+      outputAssetId: true,
+      submissionId: true,
+      sessionId: true,
+      status: true,
+      submission: {
+        select: {
+          source: true,
+          senderFingerprint: true
+        }
+      }
+    }
+  });
+
+  if (!renderJob) {
+    return false;
+  }
+
+  if (renderJob.status === "failed") {
+    return {
+      failed: true,
+      moderationBlockCount: 0,
+      banned: false
+    };
+  }
+
+  const previousFailureCount =
+    renderJob.submissionId && !options.moderationBlocked
+      ? await db.renderJob.count({
+          where: {
+            submissionId: renderJob.submissionId,
+            status: "failed",
+            id: {
+              not: renderJob.id
+            }
+          }
+        })
+      : 0;
+  const retryExhausted =
+    !options.moderationBlocked &&
+    !options.forceRetry &&
+    Boolean(renderJob.submissionId) &&
+    previousFailureCount >= 1;
+
+  await db.$transaction(async (tx: any) => {
+    await tx.renderJob.update({
+      where: {
+        id: renderJob.id
+      },
+      data: {
+        status: "failed",
+        failureReason,
+        lastPolledAt: new Date()
+      }
+    });
+
+    if (renderJob.outputAssetId) {
+      await tx.visualAsset.update({
+        where: {
+          id: renderJob.outputAssetId
+        },
+        data: {
+          status: "failed"
+        }
+      });
+    }
+
+    if (renderJob.submissionId) {
+      await tx.promptSubmission.update({
+        where: {
+          id: renderJob.submissionId
+        },
+        data: {
+          status: options.moderationBlocked
+            ? "rejected"
+            : retryExhausted
+              ? "failed"
+              : "approved",
+          selectedAt: null,
+          ...(options.moderationBlocked
+            ? {
+                approvalReason: videoModerationBlockedReason
+              }
+            : {})
+        }
+      });
+    }
+  });
+
+  let moderationBlockCount = 0;
+
+  if (
+    options.moderationBlocked &&
+    renderJob.submission?.source === "web" &&
+    renderJob.submission.senderFingerprint
+  ) {
+    const senderFingerprint = renderJob.submission.senderFingerprint;
+
+    await recordAuditEvent({
+      type: getParticipantModerationEventType(senderFingerprint),
+      summary: "Counted a participant video-moderation block",
+      details: renderJob.id,
+      sessionId: renderJob.sessionId
+    });
+
+    moderationBlockCount = await getParticipantModerationBlockCount(
+      renderJob.sessionId,
+      senderFingerprint
+    );
+
+    console.info("[participant-moderation] counted video-moderation block", {
+      sessionId: renderJob.sessionId,
+      renderJobId: renderJob.id,
+      moderationBlockCount,
+      banned: isParticipantBanned(moderationBlockCount)
+    });
+  }
+
+  return {
+    failed: true,
+    moderationBlockCount,
+    banned: isParticipantBanned(moderationBlockCount)
+  };
+}
+
+export async function completeGeminiVideoRender(
+  providerRequestId: string,
+  outputUri: string
+) {
+  const renderJob = await db.renderJob.findUnique({
+    where: {
+      providerRequestId
+    },
+    include: {
+      outputAsset: true,
+      session: {
+        include: {
+          playbackState: true
+        }
+      }
+    }
+  });
+
+  if (!renderJob || !renderJob.outputAsset) {
+    return "missing" as const;
+  }
+
+  if (renderJob.status === "completed" || renderJob.status === "failed") {
+    return renderJob.status;
+  }
+
+  await db.renderJob.update({
+    where: {
+      id: renderJob.id
+    },
+    data: {
+      providerOutputUri: outputUri,
+      status: "in_progress",
+      lastPolledAt: new Date()
+    }
+  });
+
+  const apiKey = renderJob.session?.userId
+    ? await getEffectiveGeminiApiKeyForUser(String(renderJob.session.userId))
+    : null;
+
+  if (!apiKey) {
+    return "in_progress" as const;
+  }
+
+  const buffer = await resolveActiveVideoBuffer(outputUri, apiKey);
+
+  if (!buffer) {
+    return "in_progress" as const;
+  }
+
+  const saved = await persistVideoAsset(renderJob.outputAsset.id, buffer);
+
+  await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
+    publicUrl: saved.publicUrl,
+    storagePath: saved.storagePath,
+    sourceVideoId: providerRequestId
+  });
+
+  return "completed" as const;
+}
+
+export async function failGeminiVideoRender(
+  providerRequestId: string,
+  failureReason: string
+) {
+  const renderJob = await db.renderJob.findUnique({
+    where: {
+      providerRequestId
+    },
+    select: {
+      id: true,
+      status: true
+    }
+  });
+
+  if (!renderJob || renderJob.status === "completed" || renderJob.status === "failed") {
+    return false;
+  }
+
+  await failRenderJob(renderJob.id, failureReason);
+  return true;
 }
 
 async function markRenderJobReady(
@@ -247,7 +852,7 @@ async function markRenderJobReady(
     return;
   }
 
-  await db.$transaction(async (tx: any) => {
+  const placement = await db.$transaction(async (tx: any) => {
     await tx.visualAsset.update({
       where: {
         id: assetId
@@ -266,23 +871,27 @@ async function markRenderJobReady(
       },
       data: {
         status: "completed",
+        failureReason: null,
         completedAt: new Date(),
         lastPolledAt: new Date()
       }
     });
 
-    if (!playbackState.currentAssetId) {
-      await tx.playbackState.update({
-        where: {
-          id: playbackState.id
-        },
-        data: {
-          currentAssetId: assetId,
-          status: "live",
-          lastTransitionAt: new Date()
-        }
-      });
+    const currentClaim = await tx.playbackState.updateMany({
+      where: {
+        id: playbackState.id,
+        currentAssetId: null
+      },
+      data: {
+        currentAssetId: assetId,
+        status: "live",
+        lastTransitionAt: new Date()
+      }
+    });
+    let placement: "current" | "next" | "backlog" = "backlog";
 
+    if (currentClaim.count === 1) {
+      placement = "current";
       await tx.visualAsset.update({
         where: {
           id: assetId
@@ -291,16 +900,12 @@ async function markRenderJobReady(
           status: "live"
         }
       });
-    } else if (!playbackState.nextAssetId) {
-      await tx.playbackState.update({
-        where: {
-          id: playbackState.id
-        },
-        data: {
-          nextAssetId: assetId,
-          status: "live"
-        }
-      });
+    } else {
+      const promotedAssetId = await promoteOldestReadyAsset(renderJob.sessionId, tx);
+
+      if (promotedAssetId === assetId) {
+        placement = "next";
+      }
     }
 
     if (renderJob.submissionId) {
@@ -309,59 +914,387 @@ async function markRenderJobReady(
           id: renderJob.submissionId
         },
         data: {
-          status: playbackState.currentAssetId ? "ready" : "live"
+          status: placement === "current" ? "live" : "ready"
         }
       });
     }
+
+    return placement;
+  });
+
+  console.info("[render-job] completed and placed asset", {
+    sessionId: renderJob.sessionId,
+    renderJobId,
+    assetId,
+    placement
   });
 }
 
-async function callOpenAiVideoApi<T>(url: string, apiKey: string, init?: RequestInit) {
+async function callGeminiVideoApi<T>(url: string, apiKey: string, init?: RequestInit) {
   const response = await fetch(url, {
     ...init,
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      "x-goog-api-key": apiKey,
       "Content-Type": "application/json",
+      "Api-Revision": geminiApiRevision,
       ...(init?.headers ?? {})
     }
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    let parsedMessage: string | null = null;
+    let parsedCode: string | null = null;
+    let parsedProviderMessage: string | null = null;
 
     try {
       const parsed = JSON.parse(errorText) as {
         error?: {
           message?: string;
-          code?: string | null;
+          code?: string | number | null;
+          status?: string | null;
         };
       };
 
-      const message = parsed.error?.message?.trim();
-      const code = parsed.error?.code?.trim();
-
-      if (message) {
-        parsedMessage = code
-          ? `OpenAI video request failed: ${message} (${code})`
-          : `OpenAI video request failed: ${message}`;
-      }
+      parsedProviderMessage = parsed.error?.message?.trim() ?? null;
+      parsedCode = String(parsed.error?.status ?? parsed.error?.code ?? "").trim() || null;
     } catch {
-      // Fall through to a plain-text fallback if the body is not JSON.
+      // Fall through to the plain-text response below.
     }
 
-    if (parsedMessage) {
-      throw new Error(parsedMessage);
-    }
+    const providerMessage = parsedProviderMessage || errorText.trim();
+    const message = providerMessage
+      ? `Gemini video request failed: ${providerMessage}${parsedCode ? ` (${parsedCode})` : ""}`
+      : `Gemini video request failed with ${response.status}`;
 
-    const fallbackMessage = errorText.trim();
-
-    throw new Error(
-      fallbackMessage
-        ? `OpenAI video request failed with ${response.status}: ${fallbackMessage}`
-        : `OpenAI video request failed with ${response.status}`
-    );
+    throw new GeminiVideoApiError(message, {
+      code: parsedCode,
+      moderationBlocked: isVideoModerationFailure(parsedCode, providerMessage),
+      status: response.status
+    });
   }
 
   return (await response.json()) as T;
+}
+
+async function retrieveGeminiVideoInteraction(
+  interactionId: string,
+  apiKey: string
+) {
+  const url = `${geminiInteractionsUrl}/${encodeURIComponent(interactionId)}`;
+
+  try {
+    return await callGeminiVideoApi<GeminiInteraction>(url, apiKey);
+  } catch (error) {
+    if (!(error instanceof GeminiVideoApiError) || error.status !== 400) {
+      throw error;
+    }
+
+    console.warn("[render-job] standard Gemini lookup failed; trying event stream", {
+      providerCode: error.code
+    });
+
+    return streamGeminiVideoInteraction(url, apiKey);
+  }
+}
+
+async function streamGeminiVideoInteraction(url: string, apiKey: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  let completedInteraction: GeminiInteraction | null = null;
+  let modelOutputVideo: GeminiVideoContent | null = null;
+
+  try {
+    const response = await fetch(`${url}?stream=true`, {
+      headers: {
+        "x-goog-api-key": apiKey,
+        "Api-Revision": geminiApiRevision,
+        Accept: "text/event-stream"
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new GeminiVideoApiError(
+        errorText.trim() ||
+          `Gemini video event stream failed with ${response.status}`,
+        {
+          status: response.status
+        }
+      );
+    }
+
+    if (!response.body) {
+      throw new Error("Gemini video event stream returned no response body.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      const frames = pending.split(/\r?\n\r?\n/);
+      pending = frames.pop() ?? "";
+
+      for (const frame of frames) {
+        const event = parseGeminiStreamFrame(frame);
+
+        if (!event) {
+          continue;
+        }
+
+        const streamedVideo = extractVideoFromStreamEvent(event);
+
+        if (streamedVideo) {
+          modelOutputVideo = streamedVideo;
+        }
+
+        if (event.event_type === "interaction.completed") {
+          completedInteraction = {
+            ...(event.interaction ?? {}),
+            status: "completed",
+            ...(modelOutputVideo
+              ? {
+                  steps: [
+                    {
+                      type: "model_output",
+                      content: [modelOutputVideo]
+                    }
+                  ]
+                }
+              : {})
+          };
+          return completedInteraction;
+        }
+
+        if (
+          event.event_type === "interaction.failed" ||
+          event.event_type === "interaction.cancelled"
+        ) {
+          const status: GeminiInteraction["status"] =
+            event.event_type === "interaction.cancelled"
+              ? "cancelled"
+              : "failed";
+
+          return {
+            ...(event.interaction ?? {}),
+            status,
+            error: event.error ?? event.interaction?.error ?? null
+          };
+        }
+      }
+
+      if (done) {
+        break;
+      }
+    }
+
+    return completedInteraction;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return null;
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseGeminiStreamFrame(frame: string) {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+
+  if (!data || data === "[DONE]") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(data) as GeminiInteractionStreamEvent;
+  } catch {
+    return null;
+  }
+}
+
+function extractVideoFromStreamEvent(event: GeminiInteractionStreamEvent) {
+  if (event.step?.type === "model_output") {
+    const content = event.step.content?.find(
+      (item) =>
+        item.type === "video" &&
+        ("data" in item || "uri" in item)
+    );
+
+    if (content) {
+      return content as GeminiVideoContent;
+    }
+  }
+
+  if (
+    event.delta?.type === "video" &&
+    ("data" in event.delta || "uri" in event.delta)
+  ) {
+    return event.delta as GeminiVideoContent;
+  }
+
+  return extractVideoOutput(event.interaction ?? {});
+}
+
+async function fetchRemoteMedia(url: string, fallbackMimeType: string, label: string) {
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Could not download the ${label} for Gemini Omni (${response.status}).`);
+  }
+
+  const mimeType =
+    response.headers.get("content-type")?.split(";")[0]?.trim() || fallbackMimeType;
+  const data = Buffer.from(await response.arrayBuffer()).toString("base64");
+
+  return {
+    data,
+    mimeType
+  };
+}
+
+function extractVideoOutput(interaction: GeminiInteraction) {
+  if (interaction.output_video?.data || interaction.output_video?.uri) {
+    return interaction.output_video;
+  }
+
+  for (const step of interaction.steps ?? []) {
+    if (step.type !== "model_output") {
+      continue;
+    }
+
+    for (const content of step.content ?? []) {
+      if (content.type === "video" && ("data" in content || "uri" in content)) {
+        return content as GeminiVideoContent;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function resolveVideoBuffer(video: GeminiVideoContent, apiKey: string) {
+  if (video.data) {
+    return Buffer.from(video.data, "base64");
+  }
+
+  if (!video.uri) {
+    throw new Error("Gemini Omni returned an empty video output.");
+  }
+
+  const response = await fetch(video.uri, {
+    headers: {
+      "x-goog-api-key": apiKey,
+      "Api-Revision": geminiApiRevision
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download the completed Gemini Omni video (${response.status}).`);
+  }
+
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function resolveActiveVideoBuffer(outputUri: string, apiKey: string) {
+  const fileMatch = outputUri.match(/(?:^|\/)files\/([^/:?]+)/);
+
+  if (fileMatch?.[1]) {
+    const fileResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/files/${encodeURIComponent(fileMatch[1])}`,
+      {
+        headers: {
+          "x-goog-api-key": apiKey,
+          "Api-Revision": geminiApiRevision
+        }
+      }
+    );
+
+    if (!fileResponse.ok) {
+      throw new Error(
+        `Failed to check the completed Gemini Omni video (${fileResponse.status}).`
+      );
+    }
+
+    const file = (await fileResponse.json()) as {
+      state?: string;
+      error?: {
+        message?: string;
+      };
+    };
+    const state = file.state?.toUpperCase();
+
+    if (state === "FAILED") {
+      throw new Error(
+        file.error?.message?.trim() || "Gemini Omni reported a failed video file."
+      );
+    }
+
+    if (state && state !== "ACTIVE") {
+      return null;
+    }
+  }
+
+  const downloadUri = outputUri.startsWith("files/")
+    ? `https://generativelanguage.googleapis.com/v1beta/${outputUri}:download?alt=media`
+    : outputUri;
+
+  return resolveVideoBuffer(
+    {
+      type: "video",
+      uri: downloadUri
+    },
+    apiKey
+  );
+}
+
+function getInteractionFailureMessage(interaction: GeminiInteraction) {
+  const directMessage = interaction.error?.message?.trim();
+
+  if (directMessage) {
+    return directMessage;
+  }
+
+  for (const step of [...(interaction.steps ?? [])].reverse()) {
+    for (const content of [...(step.content ?? [])].reverse()) {
+      if ("text" in content && content.text?.trim()) {
+        return content.text.trim();
+      }
+    }
+  }
+
+  if (interaction.incomplete_details) {
+    return JSON.stringify(interaction.incomplete_details);
+  }
+
+  return null;
+}
+
+function isVideoModerationFailure(
+  _code: string | number | null | undefined,
+  message: string | null | undefined
+) {
+  if (!message) {
+    return false;
+  }
+
+  const normalizedMessage = message.trim().toLowerCase();
+
+  return /\bmoderation\b|\bmoderated\b|\bcontent (?:policy|safety)\b|\bsafety (?:policy|filter|reason)\b|\bblocked\b|\bfiltered\b|\bunsafe\b|\bprohibited\b/.test(
+    normalizedMessage
+  );
+}
+
+export function formatVideoModerationFailureReason(providerMessage?: string | null) {
+  const detail = providerMessage?.trim();
+  return detail ? `${videoModerationBlockedReason} ${detail}` : videoModerationBlockedReason;
 }

@@ -10,8 +10,12 @@ tmp
 .pnpm-store
 pnpm-workspace.yaml
 storage
+/output/
+/outputs/
 prisma/dev.db
 prisma/dev.db-journal
 tsconfig.tsbuildinfo
 .vercel
 .env*
+!.env.example
+.DS_Store

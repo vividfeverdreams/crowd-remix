@@ -1,4 +1,5 @@
 "use client";
+import { DashboardDisclosure } from "@/components/dashboard-disclosure";
 import {
   audioEffectCycleIntervalMs,
   audioReactiveEffects,
@@ -48,25 +49,18 @@ export function AudioSyncControls(props: AudioSyncControlsProps) {
   const selectedInputApplied = connected && props.selectedDeviceId === props.activeDeviceId;
 
   return (
-    <section className="panel p-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <span className={`h-2.5 w-2.5 rounded-full ${connected ? "bg-plasma shadow-[0_0_18px_rgba(16,214,160,0.9)]" : "bg-white/30"}`} />
-            <p className="font-mono text-xs uppercase tracking-[0.3em] text-plasma">Audio Reactive Engine</p>
-          </div>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-white/68">
-            {connected
-              ? "Dashboard input armed. Reactive levels and musical cues are being sent to the clean show output."
-              : "Connect a mixer line input, audio interface, or virtual loopback here. Keep this dashboard open while the show window runs."}
-          </p>
-        </div>
-        <span className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-white/55">
-          {connected ? "Live" : "Off"}
-        </span>
-      </div>
-
-      <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Audio input levels">
+    <DashboardDisclosure
+      eyebrow="Audio / VFX"
+      title="Audio Reactive Engine"
+      description={
+        connected
+          ? "Input armed. Reactive levels and musical cues are being sent to the show output."
+          : "Connect a mixer, audio interface, or virtual loopback when you need reactive visuals."
+      }
+      status={connected ? "Live" : "Off"}
+      statusActive={connected}
+    >
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Audio input levels">
         {meters.map((meter) => (
           <Meter key={meter.key} label={meter.label} value={props.levels[meter.key]} />
         ))}
@@ -180,7 +174,7 @@ export function AudioSyncControls(props: AudioSyncControlsProps) {
           <p>{connected ? "Listening for beats, builds, and section changes." : "Without audio sync, ready remixes retain the existing automatic crossfade behavior in the show window."}</p>
         ) : null}
       </div>
-    </section>
+    </DashboardDisclosure>
   );
 }
 

@@ -14,9 +14,10 @@ import { useDashboardAudioSync } from "@/lib/use-dashboard-audio-sync";
 type DashboardAudioSyncProps = {
   sessionId: string;
   nextReady: boolean;
+  relayToken: string;
 };
 
-export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncProps) {
+export function DashboardAudioSync({ sessionId, nextReady, relayToken }: DashboardAudioSyncProps) {
   const audio = useAudioReactiveInput();
   const [autoTakeOnCue, setAutoTakeOnCue] = useState(true);
   const [autoCycleEffects, setAutoCycleEffects] = useState(false);
@@ -29,6 +30,7 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
   const queuedCueIdRef = useRef<string | null>(null);
   const sync = useDashboardAudioSync({
     sessionId,
+    relayToken,
     connected: audio.status === "connected",
     intensity: vfxIntensity,
     autoTakeOnCue,
@@ -121,7 +123,7 @@ export function DashboardAudioSync({ sessionId, nextReady }: DashboardAudioSyncP
 
   const channelError = sync.supported
     ? null
-    : "This browser cannot synchronize the dashboard with the show window. Use a current Chrome, Edge, or Safari build.";
+    : "The live VFX relay cannot reach the show output right now. Keep this dashboard online and reconnect the input.";
 
   return (
     <AudioSyncControls

@@ -9,17 +9,26 @@ type ShowPageProps = {
     sessionId: string;
   }>;
   searchParams: Promise<{
-    monitor?: string;
+    monitor?: string | string[];
   }>;
 };
 
+function isShowMonitorMode(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value.includes("1") : value === "1";
+}
+
 export default async function ShowPage({ params, searchParams }: ShowPageProps) {
-  const [{ sessionId }, { monitor }] = await Promise.all([params, searchParams]);
+  const [{ sessionId }, query] = await Promise.all([params, searchParams]);
   const snapshot = await getSessionSnapshot(sessionId);
 
   if (!snapshot) {
     notFound();
   }
 
-  return <ShowScreen initialSnapshot={snapshot} isMonitor={monitor === "1"} />;
+  return (
+    <ShowScreen
+      initialSnapshot={snapshot}
+      isMonitor={isShowMonitorMode(query.monitor)}
+    />
+  );
 }

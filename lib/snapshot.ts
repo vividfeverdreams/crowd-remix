@@ -1,5 +1,30 @@
 import type { PromptSubmission, RankingResult, RenderJob, VisualAsset } from "@prisma/client";
 import { db } from "@/lib/db";
+import {
+  getStoredRenderProgress,
+  renderProgressEventPrefix
+} from "@/lib/render-progress-state";
+import { getShowOverlaySettings, showOverlayEventTypes } from "@/lib/show-overlay-state";
+
+const clientSourceSubmissionSelect = {
+  rawText: true,
+  sender: true,
+  source: true,
+  referenceImageUrl: true
+} as const;
+
+const clientVisualAssetSelect = {
+  id: true,
+  kind: true,
+  title: true,
+  promptText: true,
+  publicUrl: true,
+  status: true,
+  createdAt: true,
+  sourceSubmission: {
+    select: clientSourceSubmissionSelect
+  }
+} as const;
 
 export type SessionSnapshot = Awaited<ReturnType<typeof getSessionSnapshot>>;
 
@@ -11,15 +36,33 @@ export async function getSessionSnapshot(sessionId: string) {
     include: {
       playbackState: {
         include: {
-          currentAsset: true,
-          nextAsset: true,
-          fallbackAsset: true
+          currentAsset: {
+            select: clientVisualAssetSelect
+          },
+          nextAsset: {
+            select: clientVisualAssetSelect
+          },
+          fallbackAsset: {
+            select: clientVisualAssetSelect
+          }
         }
       },
       submissions: {
-        include: {
-          moderationResult: true,
-          rankingResult: true
+        select: {
+          id: true,
+          source: true,
+          sender: true,
+          rawText: true,
+          referenceImageUrl: true,
+          status: true,
+          approvalReason: true,
+          createdAt: true,
+          rankingResult: {
+            select: {
+              score: true,
+              winningPrompt: true
+            }
+          }
         },
         orderBy: {
           createdAt: "desc"
@@ -27,14 +70,53 @@ export async function getSessionSnapshot(sessionId: string) {
         take: 10
       },
       renderJobs: {
-        include: {
-          submission: true,
-          outputAsset: true
+        select: {
+          id: true,
+          mode: true,
+          status: true,
+          promptText: true,
+          failureReason: true,
+          createdAt: true
         },
         orderBy: {
           createdAt: "desc"
         },
         take: 6
+      },
+      visualAssets: {
+        where: {
+          publicUrl: {
+            not: null
+          },
+          status: {
+            in: ["ready", "live", "archived"]
+          }
+        },
+        select: clientVisualAssetSelect,
+        orderBy: {
+          createdAt: "desc"
+        },
+        take: 50
+      },
+      auditEvents: {
+        where: {
+          OR: [
+            {
+              type: {
+                in: [...showOverlayEventTypes]
+              }
+            },
+            {
+              type: {
+                startsWith: renderProgressEventPrefix
+              }
+            }
+          ]
+        },
+        orderBy: {
+          createdAt: "desc"
+        },
+        take: 100
       }
     }
   });
@@ -45,9 +127,39 @@ export async function getSessionSnapshot(sessionId: string) {
 
   const approvedSubmissions = session.submissions.filter((submission: any) => submission.status === "approved");
   const queuedRender = session.renderJobs.find((job: any) => job.status === "queued" || job.status === "in_progress");
+  const { auditEvents: showOverlayEvents, ...snapshotSession } = session;
+  const showOverlaySettings = getShowOverlaySettings(showOverlayEvents);
+  const renderJobs = snapshotSession.renderJobs.map((job) => ({
+    id: job.id,
+    mode: job.mode,
+    status: job.status,
+    promptText: job.promptText,
+    failureReason: job.failureReason,
+    createdAt: job.createdAt,
+    progress: getStoredRenderProgress(showOverlayEvents, job.id)
+  }));
+  const playbackState = snapshotSession.playbackState
+    ? {
+        ...snapshotSession.playbackState,
+        currentAsset: serializeClientVisualAsset(snapshotSession.playbackState.currentAsset),
+        nextAsset: serializeClientVisualAsset(snapshotSession.playbackState.nextAsset),
+        fallbackAsset: serializeClientVisualAsset(snapshotSession.playbackState.fallbackAsset)
+      }
+    : null;
+  const submissions = snapshotSession.submissions.map(serializeClientSubmission);
+  const visualAssets = snapshotSession.visualAssets.map((asset) =>
+    serializeClientVisualAsset(asset)!
+  );
 
   return {
-    session,
+    session: {
+      ...snapshotSession,
+      playbackState,
+      submissions,
+      renderJobs,
+      visualAssets,
+      ...showOverlaySettings
+    },
     queueHealth: {
       approvedCount: approvedSubmissions.length,
       queuedRenderCount: session.renderJobs.filter((job: any) => job.status === "queued").length,
@@ -55,6 +167,88 @@ export async function getSessionSnapshot(sessionId: string) {
       readyAssetCount: session.renderJobs.filter((job: any) => job.status === "completed").length,
       waitingOnRender: Boolean(queuedRender)
     }
+  };
+}
+
+type ClientSourceSubmission = {
+  rawText: string;
+  sender: string | null;
+  source: string;
+  referenceImageUrl: string | null;
+};
+
+type ClientVisualAsset = {
+  id: string;
+  kind: string;
+  title: string;
+  promptText: string;
+  publicUrl: string | null;
+  status: string;
+  createdAt: Date;
+  sourceSubmission: ClientSourceSubmission | null;
+};
+
+type ClientSubmission = {
+  id: string;
+  source: string;
+  sender: string | null;
+  rawText: string;
+  referenceImageUrl: string | null;
+  status: string;
+  approvalReason: string | null;
+  createdAt: Date;
+  rankingResult: {
+    score: number;
+    winningPrompt: string;
+  } | null;
+};
+
+function serializeClientSourceSubmission(submission: ClientSourceSubmission | null) {
+  if (!submission) {
+    return null;
+  }
+
+  return {
+    rawText: submission.rawText,
+    sender: submission.source === "web" ? submission.sender : null,
+    source: submission.source,
+    referenceImageUrl: submission.referenceImageUrl
+  };
+}
+
+function serializeClientVisualAsset(asset: ClientVisualAsset | null) {
+  if (!asset) {
+    return null;
+  }
+
+  return {
+    id: asset.id,
+    kind: asset.kind,
+    title: asset.title,
+    promptText: asset.promptText,
+    publicUrl: asset.publicUrl,
+    status: asset.status,
+    createdAt: asset.createdAt,
+    sourceSubmission: serializeClientSourceSubmission(asset.sourceSubmission)
+  };
+}
+
+function serializeClientSubmission(submission: ClientSubmission) {
+  return {
+    id: submission.id,
+    source: submission.source,
+    sender: submission.source === "web" ? submission.sender : null,
+    rawText: submission.rawText,
+    referenceImageUrl: submission.referenceImageUrl,
+    status: submission.status,
+    approvalReason: submission.approvalReason,
+    createdAt: submission.createdAt,
+    rankingResult: submission.rankingResult
+      ? {
+          score: submission.rankingResult.score,
+          winningPrompt: submission.rankingResult.winningPrompt
+        }
+      : null
   };
 }
 

@@ -1,6 +1,6 @@
 # DREAM SEQUENCE
 
-DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a visual DNA for the show, seeds the first loop, and lets the crowd send remix ideas through SMS or a QR-linked web form. The app moderates and ranks those ideas, rewrites the winning one into a focused Sora remix prompt, and crossfades into the next completed loop when it is ready.
+DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a visual DNA for the show, seeds the first loop, and lets the crowd send remix ideas through SMS or a QR-linked web form. The app moderates and ranks those ideas, rewrites the winning one into a focused Gemini Omni video-edit prompt, and crossfades into the next completed loop when it is ready.
 
 ## What This MVP Includes
 
@@ -23,16 +23,17 @@ DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a v
 - Public web prompt intake via `/r/[sessionCode]`
 - OpenAI text scoring for moderation/ranking/prompt compilation
 - AI-assisted session setup that expands a plain-English concept into an editable visual-DNA draft
-- OpenAI Sora seed/remix orchestration
+- Google Gemini Omni Flash seed generation and video-remix editing
+- Optional audience reference photos with multimodal safety screening and image-guided Omni remixes
 - SSE-driven realtime updates for the dashboard and show screen
 - Double-buffer video crossfade on the fullscreen playback route
 - Supabase Postgres persistence for users, sessions, queue state, and render metadata
 - Supabase Storage persistence for downloaded MP4 assets
-- Demo-mode fallback if `OPENAI_API_KEY` is missing
+- Demo-mode fallback if `GEMINI_API_KEY` is missing
 
 ## Important Product Constraint
 
-Sora video generation is asynchronous. This app is built so the experience feels responsive in under 10 seconds through fast intake, queueing, and status updates, while the current loop stays on screen until the next completed remix is ready.
+Gemini Omni video generation and editing use synchronous Interactions API requests. The current loop keeps playing while a request runs; after Gemini returns an output URI, the app resolves the generated file and stores the completed MP4 for playback.
 
 ## Local Setup
 
@@ -79,13 +80,17 @@ You can override those values with `SEED_DJ_EMAIL` and `SEED_DJ_PASSWORD`.
 - `DATABASE_URL`
 - `NEXT_PUBLIC_APP_URL`
 
-### Required for OpenAI-backed moderation and Sora rendering
+### Required for OpenAI-backed moderation and session setup
 
 - `OPENAI_API_KEY`
 - `OPENAI_TEXT_MODEL`
-- `OPENAI_VIDEO_MODEL`
 
-The app reads OpenAI credentials from environment variables only. The dashboard does not store or edit API keys.
+### Required for Gemini Omni video generation and remixing
+
+- `GEMINI_API_KEY`
+- `GEMINI_VIDEO_MODEL`
+
+The app reads OpenAI and Google credentials from environment variables only. The dashboard does not store or edit API keys.
 
 The AI-assisted session setup uses this same OpenAI text-model configuration. If draft generation is unavailable, the setup screen still lets the DJ enter every field manually.
 
@@ -99,7 +104,7 @@ The AI-assisted session setup uses this same OpenAI text-model configuration. If
 
 - `DEMO_LOOP_URL`
 
-If `OPENAI_API_KEY` is absent, the app uses a demo video URL so the playback and crossfade flow can still be exercised locally.
+If `GEMINI_API_KEY` is absent, the app uses a demo video URL so the playback and crossfade flow can still be exercised locally. If `OPENAI_API_KEY` is absent, the app falls back to its built-in moderation and ranking behavior.
 
 ## Vercel Deployment
 
@@ -108,7 +113,7 @@ The production app is designed for Vercel's serverless runtime. Configure the va
 - Use Supabase's pooled connection string for `DATABASE_URL` and its direct connection string for `DIRECT_URL`.
 - Set `NEXT_PUBLIC_APP_URL` to the public production origin, such as `https://dream-sequence.vercel.app`.
 - Use a private server-side `SUPABASE_SERVICE_ROLE_KEY`; never expose it with a `NEXT_PUBLIC_` prefix.
-- Create the `SUPABASE_STORAGE_BUCKET` bucket before starting a real Sora render.
+- Create the `SUPABASE_STORAGE_BUCKET` bucket before starting a real Gemini Omni render.
 - Add the three `TWILIO_*` variables only when SMS intake is enabled. The web audience form works without them.
 
 The live snapshot endpoint intentionally ends each serverless response before Vercel's function timeout. Browser `EventSource` clients reconnect automatically, preserving realtime dashboard and show updates without accumulating runtime timeout errors.
@@ -132,7 +137,6 @@ The live snapshot endpoint intentionally ends each serverless response before Ve
 - `POST /api/sessions/[sessionId]/reconcile`
 - `POST /api/r/[sessionCode]`
 - `POST /api/twilio/inbound`
-- `POST /api/openai/video-webhook`
 - `GET /api/assets/[assetId]`
 
 ## How The Queue Works
@@ -142,7 +146,7 @@ The live snapshot endpoint intentionally ends each serverless response before Ve
 3. The text model scores it for safety, cohesion, novelty, and remixability.
 4. Approved prompts enter the ranked queue.
 5. If no render is active and no next asset is waiting, the best approved prompt is selected.
-6. The app starts a seed render or remix render with Sora.
+6. The app starts a Gemini Omni seed generation or edits the current video for a remix, including an approved audience reference photo when one was attached.
 7. Once the render is completed, the output becomes the next queued loop.
 8. With audio sync disconnected, the fullscreen show keeps the existing automatic crossfade behavior.
 9. With audio sync connected, the ready loop waits for a detected build or section change, or for the operator to click **Take next remix now**.
@@ -153,9 +157,9 @@ Use the **Audio Reactive Engine** panel directly on the DJ dashboard, then open 
 
 1. Route a mixer, audio interface, or virtual loopback output into an input device visible to the browser.
 2. Click **Connect input** and allow microphone/audio-input access for the site.
-3. Select the desired input, choose one of the 10 audio-reactive transformations from the dropdown, and adjust **VFX intensity**. The selected treatment transforms the Sora footage itself rather than drawing a graphic overlay.
+3. Select the desired input, choose one of the 10 audio-reactive transformations from the dropdown, and adjust **VFX intensity**. The selected treatment transforms the Gemini Omni footage itself rather than drawing a graphic overlay.
 4. Turn on **Auto-cycle all 10 effects** to move to the next effect every 12 seconds while the input is connected.
-5. Leave **Take next remix on musical cue** enabled to crossfade ready Sora remixes on detected builds and strong returns after quiet passages.
+5. Leave **Take next remix on musical cue** enabled to crossfade ready Gemini Omni remixes on detected builds and strong returns after quiet passages.
 
 The input is analyzed locally with the Web Audio API and is never connected to browser playback, which avoids monitoring feedback. Keep the dashboard open on the same browser and computer as the show window; it sends only reactive levels and transition cues to the visual output. The projection window contains no operator controls or status text.
 
@@ -163,7 +167,9 @@ The input is analyzed locally with the Web Audio API and is never connected to b
 
 - Supabase Postgres is the source of truth in both development and production; the app does not rely on a serverless filesystem.
 - Rendered videos are uploaded to Supabase Storage and served from the configured public bucket.
-- The app supports OpenAI video webhooks, but it also includes a manual reconciliation endpoint so local development does not depend on webhook delivery.
+- Gemini Omni requests run synchronously and return an output URI. If the returned file is still processing, reconciliation checks it through the Gemini Files API before persisting it.
+- Audience photos are limited to supported image formats, verified by file signature, screened with multimodal moderation before storage, and counted alongside video moderation toward the three-strike device lockout for that live session.
+- Gemini interactions are stored to preserve the stateful source context used by subsequent video remixes.
 
 ## Testing
 
@@ -173,4 +179,4 @@ Run:
 pnpm test
 ```
 
-The current tests cover the heuristic assessment fallback and the auth helper primitives.
+The test suite covers the Gemini Omni request contract, queue behavior, fallback assessment, auth helpers, playback transitions, and audio-reactive controls.

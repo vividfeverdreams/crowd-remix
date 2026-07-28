@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import { getAudioSyncChannelName, isAudioSyncMessage } from "@/lib/audio-sync-channel";
+import {
+  getAudioSyncChannelName,
+  isAudioSyncMessage,
+  type AudioSyncMessage
+} from "@/lib/audio-sync-channel";
 import { defaultAudioReactiveEffect, type AudioReactiveEffectId } from "@/lib/audio-reactive-effects";
 import type { AudioCueKind } from "@/lib/audio-reactivity";
 import type { AudioReactiveLevels } from "@/lib/use-audio-reactive-input";
@@ -21,33 +25,34 @@ const silentLevels: AudioReactiveLevels = {
 };
 
 const dashboardTimeoutMs = 1800;
+const replayGraceMs = 250;
 
 export function useShowAudioSync(sessionId: string) {
   const levelsRef = useRef<AudioReactiveLevels>({ ...silentLevels });
   const lastMessageAtRef = useRef(0);
+  const mountedAtRef = useRef(Date.now());
+  const lastCueIdRef = useRef("");
+  const lastTakeIdRef = useRef("");
   const [connected, setConnected] = useState(false);
   const [intensity, setIntensity] = useState(0.85);
   const [autoTakeOnCue, setAutoTakeOnCue] = useState(true);
   const [effect, setEffect] = useState<AudioReactiveEffectId>(defaultAudioReactiveEffect);
   const [lastCue, setLastCue] = useState<RemoteAudioCue | null>(null);
   const [manualTakeRequestId, setManualTakeRequestId] = useState<string | null>(null);
+  const [manualTakeAssetId, setManualTakeAssetId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!("BroadcastChannel" in window)) {
-      return;
-    }
-
-    const channel = new BroadcastChannel(getAudioSyncChannelName(sessionId));
-
-    channel.onmessage = (event: MessageEvent<unknown>) => {
-      if (!isAudioSyncMessage(event.data) || event.data.sessionId !== sessionId) {
+    const handleMessage = (message: AudioSyncMessage) => {
+      if (message.sessionId !== sessionId) {
         return;
       }
 
-      const message = event.data;
-      lastMessageAtRef.current = Date.now();
-
       if (message.type === "frame") {
+        if (Date.now() - message.sentAt > dashboardTimeoutMs) {
+          return;
+        }
+
+        lastMessageAtRef.current = Date.now();
         levelsRef.current = message.levels;
         setConnected(true);
         setIntensity(message.intensity);
@@ -57,6 +62,11 @@ export function useShowAudioSync(sessionId: string) {
       }
 
       if (message.type === "state") {
+        if (message.connected && Date.now() - message.sentAt > dashboardTimeoutMs) {
+          return;
+        }
+
+        lastMessageAtRef.current = Date.now();
         setConnected(message.connected);
         setIntensity(message.intensity);
         setAutoTakeOnCue(message.autoTakeOnCue);
@@ -68,7 +78,16 @@ export function useShowAudioSync(sessionId: string) {
         return;
       }
 
+      if (message.sentAt < mountedAtRef.current - replayGraceMs) {
+        return;
+      }
+
       if (message.type === "cue") {
+        if (message.eventId === lastCueIdRef.current) {
+          return;
+        }
+
+        lastCueIdRef.current = message.eventId;
         setLastCue({
           id: message.eventId,
           kind: message.cue,
@@ -77,7 +96,38 @@ export function useShowAudioSync(sessionId: string) {
         return;
       }
 
+      if (message.eventId === lastTakeIdRef.current) {
+        return;
+      }
+
+      lastTakeIdRef.current = message.eventId;
+      setManualTakeAssetId(message.assetId ?? null);
       setManualTakeRequestId(message.eventId);
+    };
+
+    const handleUnknownMessage = (value: unknown) => {
+      if (isAudioSyncMessage(value)) {
+        handleMessage(value);
+      }
+    };
+
+    const channel = "BroadcastChannel" in window
+      ? new BroadcastChannel(getAudioSyncChannelName(sessionId))
+      : null;
+    const relayStream = new EventSource(`/api/sessions/${sessionId}/audio-sync/stream`);
+
+    if (channel) {
+      channel.onmessage = (event: MessageEvent<unknown>) => {
+        handleUnknownMessage(event.data);
+      };
+    }
+
+    relayStream.onmessage = (event) => {
+      try {
+        handleUnknownMessage(JSON.parse(event.data));
+      } catch {
+        // EventSource reconnects automatically if a relay response is interrupted.
+      }
     };
 
     const watchdog = window.setInterval(() => {
@@ -90,7 +140,8 @@ export function useShowAudioSync(sessionId: string) {
 
     return () => {
       window.clearInterval(watchdog);
-      channel.close();
+      channel?.close();
+      relayStream.close();
       levelsRef.current = { ...silentLevels };
     };
   }, [sessionId]);
@@ -102,6 +153,7 @@ export function useShowAudioSync(sessionId: string) {
     intensity,
     lastCue,
     levelsRef: levelsRef as MutableRefObject<AudioReactiveLevels>,
+    manualTakeAssetId,
     manualTakeRequestId
   };
 }

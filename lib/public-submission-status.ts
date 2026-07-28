@@ -1,7 +1,16 @@
 import { db } from "@/lib/db";
+import {
+  getParticipantBlocksRemaining,
+  getParticipantModerationBlockCount,
+  isParticipantBanned
+} from "@/lib/participant-session";
+import { isVideoModerationFailureReason } from "@/lib/rendering";
+import { isImageModerationFailureReason } from "@/lib/image-moderation";
 
 export type PublicSubmissionState =
   | "approved"
+  | "banned"
+  | "blocked"
   | "queued"
   | "rendering"
   | "ready"
@@ -16,6 +25,9 @@ export type PublicSubmissionStatus = {
   title: string;
   detail: string;
   prompt: string;
+  referenceImageUrl?: string;
+  moderationBlockCount?: number;
+  blocksRemaining?: number;
   submittedAt: string;
   updatedAt: string;
 };
@@ -60,11 +72,28 @@ export async function getPublicSubmissionStatus(sessionCode: string, submissionI
     })
   )[0];
 
-  return describeSubmissionStatus(submission, renderJob);
+  const mediaModerationBlocked =
+    isVideoModerationFailureReason(renderJob?.failureReason) ||
+    isImageModerationFailureReason(submission.approvalReason);
+  const moderationBlockCount = mediaModerationBlocked
+    ? await getParticipantModerationBlockCount(
+        String(session.id),
+        String(submission.senderFingerprint)
+      )
+    : 0;
+
+  return describeSubmissionStatus(submission, renderJob, moderationBlockCount);
 }
 
-function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmissionStatus {
+function describeSubmissionStatus(
+  submission: any,
+  renderJob: any,
+  moderationBlockCount = 0
+): PublicSubmissionStatus {
   const prompt = String(submission.rawText ?? submission.normalizedText ?? "");
+  const referenceImageUrl = submission.referenceImageUrl
+    ? String(submission.referenceImageUrl)
+    : undefined;
   const submittedAt = String(submission.createdAt ?? "");
   const updatedAt = String(submission.updatedAt ?? submission.createdAt ?? "");
   const approvalReason = String(
@@ -74,6 +103,32 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
       ""
   ).trim();
 
+  if (
+    isVideoModerationFailureReason(renderJob?.failureReason) ||
+    isImageModerationFailureReason(submission.approvalReason)
+  ) {
+    const banned = isParticipantBanned(moderationBlockCount);
+    const blocksRemaining = getParticipantBlocksRemaining(moderationBlockCount);
+
+    return {
+      state: banned ? "banned" : "blocked",
+      title: banned
+        ? "Device locked for this sequence"
+        : "Image or video blocked by safety moderation",
+      detail: banned
+        ? "This was the third image or video moderation block, so this device cannot submit again until this live sequence ends."
+        : `The media safety filter blocked this submission. ${blocksRemaining} ${
+            blocksRemaining === 1 ? "block" : "blocks"
+          } remaining before this device is locked for this live sequence.`,
+      prompt,
+      referenceImageUrl,
+      moderationBlockCount,
+      blocksRemaining,
+      submittedAt,
+      updatedAt
+    };
+  }
+
   if (submission.status === "rejected") {
     return {
       state: "rejected",
@@ -82,6 +137,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
         approvalReason ||
         "The venue-safe filter rejected this remix, so it will not be sent to the screen.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -93,6 +149,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
       title: "Live on screen",
       detail: "This remix made it through and is currently playing in the show.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -104,6 +161,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
       title: "Played earlier",
       detail: "This remix already hit the screen and has now rolled into the archive.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -115,6 +173,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
       title: "Ready for transition",
       detail: "The remix finished rendering and is loaded as a candidate for the next crossfade.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -126,6 +185,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
       title: "Rendering now",
       detail: "The DJ system picked this remix and is rendering the next visual loop right now.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -143,6 +203,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
           ? "A render attempt failed, but the remix is still approved and can be selected again."
           : "A render attempt did not finish, so the queue is waiting for another pass.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -154,6 +215,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
       title: "Chosen for the queue",
       detail: "The DJ system picked this remix. It is next in line for rendering.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -167,6 +229,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
         approvalReason ||
         "The remix passed venue-safe scoring and is waiting for an open render slot.",
       prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };
@@ -177,6 +240,7 @@ function describeSubmissionStatus(submission: any, renderJob: any): PublicSubmis
     title: "Received",
     detail: "The remix text landed in the system and is being scored now.",
     prompt,
+    referenceImageUrl,
     submittedAt,
     updatedAt
   };

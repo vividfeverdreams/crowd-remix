@@ -25,57 +25,62 @@ model User {
 }
 
 model DJSession {
-  id                String             @id @default(cuid())
-  code              String             @unique
-  userId            String
-  name              String
-  artistName        String
-  trackName         String
-  creativeBible     String
-  allowedMotifs     String
-  bannedTerms       String
-  colorPalette      String
-  motionRules       String
-  basePrompt        String
-  imageReferenceUrl String?
-  smsNumber         String?
-  status            String             @default("draft")
-  venueSafeMode     Boolean            @default(true)
-  autoSelectEnabled Boolean            @default(true)
-  startedAt         DateTime?
-  stoppedAt         DateTime?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  submissions       PromptSubmission[]
-  visualAssets      VisualAsset[]
-  renderJobs        RenderJob[]
-  playbackState     PlaybackState?
-  auditEvents       AuditEvent[]
+  id                   String             @id @default(cuid())
+  code                 String             @unique
+  userId               String
+  name                 String
+  artistName           String
+  trackName            String
+  creativeBible        String
+  allowedMotifs        String
+  bannedTerms          String
+  colorPalette         String
+  motionRules          String
+  basePrompt           String
+  imageReferenceUrl    String?
+  smsNumber            String?
+  status               String             @default("draft")
+  venueSafeMode        Boolean            @default(true)
+  artistControlEnabled Boolean            @default(true)
+  autoSelectEnabled    Boolean            @default(true)
+  videoDurationSeconds Int                @default(8)
+  startedAt            DateTime?
+  stoppedAt            DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  submissions          PromptSubmission[]
+  visualAssets         VisualAsset[]
+  renderJobs           RenderJob[]
+  playbackState        PlaybackState?
+  auditEvents          AuditEvent[]
 
   @@index([userId, createdAt])
   @@schema("dream_sequence")
 }
 
 model PromptSubmission {
-  id                String            @id @default(cuid())
-  sessionId         String
-  source            String
-  sender            String?
-  senderFingerprint String
-  messageSid        String?           @unique
-  rawText           String
-  normalizedText    String
-  status            String            @default("submitted")
-  approvalReason    String?
-  selectedAt        DateTime?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  session           DJSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  moderationResult  ModerationResult?
-  rankingResult     RankingResult?
-  renderJobs        RenderJob[]
-  visualAssets      VisualAsset[]
+  id                        String            @id @default(cuid())
+  sessionId                 String
+  source                    String
+  sender                    String?
+  senderFingerprint         String
+  messageSid                String?           @unique
+  rawText                   String
+  normalizedText            String
+  referenceImageUrl         String?
+  referenceImageStoragePath String?
+  referenceImageMimeType    String?
+  status                    String            @default("submitted")
+  approvalReason            String?
+  selectedAt                DateTime?
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+  session                   DJSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  moderationResult          ModerationResult?
+  rankingResult             RankingResult?
+  renderJobs                RenderJob[]
+  visualAssets              VisualAsset[]
 
   @@index([sessionId, createdAt])
   @@index([sessionId, status])
@@ -142,24 +147,26 @@ model VisualAsset {
 }
 
 model RenderJob {
-  id            String            @id @default(cuid())
-  sessionId     String
-  submissionId  String?
-  sourceAssetId String?
-  outputAssetId String?           @unique
-  mode          String
-  status        String            @default("queued")
-  openaiVideoId String?           @unique
-  promptText    String
-  failureReason String?
-  lastPolledAt  DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  session       DJSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  submission    PromptSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
-  sourceAsset   VisualAsset?      @relation("RenderSource", fields: [sourceAssetId], references: [id], onDelete: SetNull)
-  outputAsset   VisualAsset?      @relation("RenderOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
+  id                String            @id @default(cuid())
+  sessionId         String
+  submissionId      String?
+  sourceAssetId     String?
+  outputAssetId     String?           @unique
+  mode              String
+  status            String            @default("queued")
+  providerRequestId String?           @unique @map("openaiVideoId")
+  providerOutputUri String?
+  providerStrategy  String?
+  promptText        String
+  failureReason     String?
+  lastPolledAt      DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  session           DJSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  submission        PromptSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  sourceAsset       VisualAsset?      @relation("RenderSource", fields: [sourceAssetId], references: [id], onDelete: SetNull)
+  outputAsset       VisualAsset?      @relation("RenderOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
 
   @@index([sessionId, status])
   @@schema("dream_sequence")

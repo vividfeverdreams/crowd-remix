@@ -1,14 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { decideAutomaticCueTransition, getTypewriterChunkSize } from "@/lib/remix-transition";
+import {
+  decideAutomaticCueTransition,
+  getAudienceFacingRemixPrompt,
+  getPlaybackAttribution,
+  getStandbyVideoSlot,
+  isVideoSlotVisible,
+  shouldAdvancePlaybackAtVideoEnd,
+  type VideoSlotIndex,
+  getTypewriterChunkSize
+} from "@/lib/remix-transition";
 import { getAccountRemixPath } from "@/lib/remix-links";
+import { shouldShowNextRemixProgressOverlay } from "@/lib/show-overlay-state";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useAudioReactiveVisualEffect } from "@/lib/use-audio-reactive-visual-effect";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { useShowAudioSync } from "@/lib/use-show-audio-sync";
-import { useShowQrOverlay } from "@/lib/use-show-qr-overlay";
+import { wordmarkCropLayout } from "@/lib/wordmark-layout";
 
 type ShowScreenProps = {
   initialSnapshot: NonNullable<SessionSnapshot>;
@@ -17,21 +28,87 @@ type ShowScreenProps = {
 
 type QueuedTransition = {
   assetId: string;
+  nickname: string | null;
+  promptText: string;
+  referenceImageUrl: string | null;
+  videoSlot: VideoSlotIndex;
+};
+
+type PlayableQueuedAsset = {
+  id: string;
+  promptText: string;
+  publicUrl: string | null;
+  sourceSubmission: {
+    rawText: string;
+    sender: string | null;
+    source: string;
+    referenceImageUrl: string | null;
+  } | null;
+};
+
+type VideoSlot = {
+  assetId: string;
+  url: string;
+  nickname: string;
   promptText: string;
 };
 
-export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenProps) {
+type VideoSlots = [VideoSlot | null, VideoSlot | null];
+
+export function canMutateShowPlayback(isMonitor: boolean) {
+  return !isMonitor;
+}
+
+export function shouldAdvanceShowPlaybackAtVideoEnd(input: {
+  isMonitor: boolean;
+  activeSlotEnded: boolean;
+  audioSyncConnected: boolean;
+  nextAssetReady: boolean;
+}) {
+  return (
+    canMutateShowPlayback(input.isMonitor) &&
+    shouldAdvancePlaybackAtVideoEnd({
+      activeSlotEnded: input.activeSlotEnded,
+      audioSyncConnected: input.audioSyncConnected,
+      nextAssetReady: input.nextAssetReady
+    })
+  );
+}
+
+export function ShowScreen({
+  initialSnapshot,
+  isMonitor = false
+}: ShowScreenProps) {
   const snapshot = useSessionSnapshot(initialSnapshot);
   const audioSync = useShowAudioSync(initialSnapshot.session.id);
-  const qrOverlay = useShowQrOverlay(initialSnapshot.session.id);
-  const [fadeNext, setFadeNext] = useState(false);
+  const playbackMutationsEnabled = canMutateShowPlayback(isMonitor);
+  const initialPlaybackAsset = initialSnapshot.session.playbackState?.currentAsset ?? null;
+  const initialPlaybackUrl = resolvePlaybackUrl(initialPlaybackAsset?.publicUrl ?? null);
+  const initialPlaybackAttribution = getPlaybackAttribution(initialPlaybackAsset);
+  const [videoSlots, setVideoSlots] = useState<VideoSlots>(() => [
+    initialPlaybackAsset?.id && initialPlaybackUrl
+      ? {
+          assetId: initialPlaybackAsset.id,
+          url: initialPlaybackUrl,
+          ...initialPlaybackAttribution
+        }
+      : null,
+    null
+  ]);
+  const [activeVideoSlot, setActiveVideoSlot] = useState<VideoSlotIndex>(0);
+  const [crossfadingToSlot, setCrossfadingToSlot] = useState<VideoSlotIndex | null>(null);
   const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
   const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
+  const [promptExiting, setPromptExiting] = useState(false);
   const [submissionUrl, setSubmissionUrl] = useState("");
   const visualTargetRef = useRef<HTMLDivElement>(null);
-  const nextVideoRef = useRef<HTMLVideoElement>(null);
+  const wordmarkTargetRef = useRef<HTMLDivElement>(null);
+  const firstVideoSlotRef = useRef<HTMLVideoElement>(null);
+  const secondVideoSlotRef = useRef<HTMLVideoElement>(null);
+  const activeVideoSlotRef = useRef<VideoSlotIndex>(0);
   const promptRevealRef = useRef<QueuedTransition | null>(null);
   const transitionTimerRef = useRef<number | null>(null);
+  const promptExitTimerRef = useRef<number | null>(null);
   const transitionInFlightRef = useRef(false);
   const handledCueIdRef = useRef<string | null>(null);
   const handledManualTakeIdRef = useRef<string | null>(null);
@@ -40,10 +117,16 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
   const playback = session.playbackState;
   const currentAsset = playback?.currentAsset ?? null;
   const nextAsset = playback?.nextAsset ?? null;
-  const currentAssetUrl = resolvePlaybackUrl(currentAsset?.publicUrl ?? null);
   const nextAssetUrl = resolvePlaybackUrl(nextAsset?.publicUrl ?? null);
-  const shouldRenderNext = Boolean(nextAssetUrl);
   const crossfadeDurationMs = Math.max(400, Math.round((playback?.crossfadeSeconds ?? 2) * 1000));
+  const nextRemixRender = session.renderJobs.find(
+    (job) => job.status === "queued" || job.status === "in_progress"
+  );
+  const nextRemixProgress = normalizeShowProgress(nextRemixRender?.progress);
+  const showNextRemixProgress = shouldShowNextRemixProgressOverlay(
+    session.progressOverlayVisible,
+    Boolean(nextRemixRender)
+  );
 
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
@@ -54,40 +137,111 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
     effect: audioSync.effect,
     intensity: audioSync.intensity,
     levelsRef: audioSync.levelsRef,
-    targetRef: visualTargetRef
+    targetRef: session.wordmarkAudioReactiveOnly ? wordmarkTargetRef : visualTargetRef
   });
+
+  const getVideoElement = useCallback(
+    (slot: VideoSlotIndex) =>
+      slot === 0 ? firstVideoSlotRef.current : secondVideoSlotRef.current,
+    []
+  );
 
   const beginCrossfade = useCallback(
     (transition: QueuedTransition) => {
-      setPromptReveal(null);
-      setFadeNext(true);
-
-      if (transitionTimerRef.current !== null) {
-        window.clearTimeout(transitionTimerRef.current);
+      if (!playbackMutationsEnabled) {
+        return;
       }
 
-      transitionTimerRef.current = window.setTimeout(() => {
-        void (async () => {
-          try {
-            const response = await fetch(`/api/sessions/${session.id}/transition`, {
-              method: "POST"
+      void (async () => {
+        const incomingVideo = getVideoElement(transition.videoSlot);
+
+        if (!incomingVideo || incomingVideo.dataset.assetId !== transition.assetId) {
+          transitionInFlightRef.current = false;
+          promptRevealRef.current = null;
+          setPromptReveal(null);
+          return;
+        }
+
+        try {
+          await prepareVideoForCrossfade(incomingVideo);
+
+          console.info("[show-transition] decoded remix in persistent video slot", {
+            assetId: transition.assetId,
+            videoSlot: transition.videoSlot,
+            readyState: incomingVideo.readyState
+          });
+
+          setPromptExiting(true);
+          setCrossfadingToSlot(transition.videoSlot);
+
+          if (promptExitTimerRef.current !== null) {
+            window.clearTimeout(promptExitTimerRef.current);
+          }
+
+          promptExitTimerRef.current = window.setTimeout(() => {
+            setPromptReveal(null);
+            setPromptExiting(false);
+            promptExitTimerRef.current = null;
+          }, Math.min(650, Math.max(300, Math.round(crossfadeDurationMs * 0.35))));
+
+          if (transitionTimerRef.current !== null) {
+            window.clearTimeout(transitionTimerRef.current);
+          }
+
+          const promotionRequest = fetch(`/api/sessions/${session.id}/transition`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              assetId: transition.assetId
+            })
+          });
+
+          transitionTimerRef.current = window.setTimeout(() => {
+            const previousVideoSlot = activeVideoSlotRef.current;
+
+            activeVideoSlotRef.current = transition.videoSlot;
+            setActiveVideoSlot(transition.videoSlot);
+            setCrossfadingToSlot(null);
+            transitionTimerRef.current = null;
+
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                if (activeVideoSlotRef.current === transition.videoSlot) {
+                  getVideoElement(previousVideoSlot)?.pause();
+                }
+              });
             });
+          }, crossfadeDurationMs);
 
-            if (!response.ok) {
-              throw new Error("The transition endpoint rejected the cutover.");
-            }
+          const response = await promotionRequest;
 
-            setHandledNextAssetId(transition.assetId);
-          } catch {
-            setFadeNext(false);
-          } finally {
-            transitionInFlightRef.current = false;
+          if (!response.ok) {
+            throw new Error("The transition endpoint rejected the cutover.");
+          }
+
+          setHandledNextAssetId(transition.assetId);
+        } catch (error) {
+          console.error("[show-transition] persistent-slot crossfade failed", {
+            assetId: transition.assetId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+
+          if (transitionTimerRef.current !== null) {
+            window.clearTimeout(transitionTimerRef.current);
             transitionTimerRef.current = null;
           }
-        })();
-      }, crossfadeDurationMs);
+
+          promptRevealRef.current = null;
+          setPromptReveal(null);
+          setPromptExiting(false);
+          setCrossfadingToSlot(null);
+          transitionInFlightRef.current = false;
+        }
+      })();
     },
-    [crossfadeDurationMs, session.id]
+    [crossfadeDurationMs, getVideoElement, playbackMutationsEnabled, session.id]
   );
 
   const finishPromptReveal = useCallback(() => {
@@ -101,52 +255,86 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
     beginCrossfade(transition);
   }, [beginCrossfade]);
 
-  const takeNext = useCallback(() => {
-    const assetId = nextAsset?.id;
+  const takeAsset = useCallback((asset: PlayableQueuedAsset | null) => {
+    const assetId = asset?.id;
+    const assetUrl = resolvePlaybackUrl(asset?.publicUrl ?? null);
 
-    if (!assetId || !nextAssetUrl || assetId === handledNextAssetId || transitionInFlightRef.current) {
+    if (
+      !playbackMutationsEnabled ||
+      !assetId ||
+      !assetUrl ||
+      assetId === handledNextAssetId ||
+      transitionInFlightRef.current
+    ) {
       return false;
     }
 
     const transition = {
       assetId,
-      promptText: nextAsset.promptText.trim() || "New remix incoming."
+      nickname:
+        asset.sourceSubmission?.source === "web"
+          ? asset.sourceSubmission.sender?.trim() || null
+          : null,
+      promptText: getAudienceFacingRemixPrompt(asset.sourceSubmission?.rawText),
+      referenceImageUrl:
+        asset.sourceSubmission?.referenceImageUrl ?? null,
+      videoSlot: getStandbyVideoSlot(activeVideoSlotRef.current)
     };
+    const attribution = getPlaybackAttribution(asset);
 
     transitionInFlightRef.current = true;
     promptRevealRef.current = transition;
-    void nextVideoRef.current?.play().catch(() => undefined);
+    setPromptExiting(false);
+    setVideoSlots((current) => {
+      const nextSlots: VideoSlots = [...current];
+      nextSlots[transition.videoSlot] = {
+        assetId,
+        url: assetUrl,
+        ...attribution
+      };
+      return nextSlots;
+    });
     setPromptReveal(transition);
     return true;
-  }, [handledNextAssetId, nextAsset, nextAssetUrl]);
+  }, [handledNextAssetId, playbackMutationsEnabled]);
+
+  const takeNext = useCallback(() => takeAsset(nextAsset), [nextAsset, takeAsset]);
 
   useEffect(() => {
-    if (!handledNextAssetId || currentAsset?.id !== handledNextAssetId) {
+    const activeAssetId = videoSlots[activeVideoSlot]?.assetId;
+
+    if (
+      !handledNextAssetId ||
+      currentAsset?.id !== handledNextAssetId ||
+      activeAssetId !== handledNextAssetId ||
+      crossfadingToSlot !== null
+    ) {
       return;
     }
 
-    setFadeNext(false);
+    console.info("[show-transition] server confirmed persistent-slot promotion", {
+      assetId: handledNextAssetId,
+      videoSlot: activeVideoSlot
+    });
     setHandledNextAssetId(null);
-  }, [currentAsset?.id, handledNextAssetId]);
-
-  useEffect(() => {
-    if (isMonitor || !nextAsset?.id || nextAsset.id === handledNextAssetId || audioSync.connected) {
-      return;
-    }
-
-    const automaticTake = window.setTimeout(() => {
-      takeNext();
-    }, 600);
-
-    return () => {
-      window.clearTimeout(automaticTake);
-    };
-  }, [audioSync.connected, handledNextAssetId, isMonitor, nextAsset?.id, takeNext]);
+    transitionInFlightRef.current = false;
+  }, [
+    activeVideoSlot,
+    crossfadingToSlot,
+    currentAsset?.id,
+    handledNextAssetId,
+    videoSlots
+  ]);
 
   useEffect(() => {
     const cue = audioSync.lastCue;
 
-    if (isMonitor || !audioSync.connected || !cue || cue.id === handledCueIdRef.current) {
+    if (
+      !playbackMutationsEnabled ||
+      !audioSync.connected ||
+      !cue ||
+      cue.id === handledCueIdRef.current
+    ) {
       return;
     }
 
@@ -164,23 +352,52 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
     if (decision === "take-remix") {
       takeNext();
     }
-  }, [audioSync.autoTakeOnCue, audioSync.connected, audioSync.lastCue, isMonitor, nextAsset?.id, nextAssetUrl, takeNext]);
+  }, [
+    audioSync.autoTakeOnCue,
+    audioSync.connected,
+    audioSync.lastCue,
+    nextAsset?.id,
+    nextAssetUrl,
+    playbackMutationsEnabled,
+    takeNext
+  ]);
 
   useEffect(() => {
     const requestId = audioSync.manualTakeRequestId;
 
-    if (isMonitor || !requestId || requestId === handledManualTakeIdRef.current) {
+    if (
+      !playbackMutationsEnabled ||
+      !requestId ||
+      requestId === handledManualTakeIdRef.current
+    ) {
       return;
     }
 
-    handledManualTakeIdRef.current = requestId;
-    takeNext();
-  }, [audioSync.manualTakeRequestId, isMonitor, takeNext]);
+    const selectedHistoricalAsset = audioSync.manualTakeAssetId
+      ? session.visualAssets.find((asset) => asset?.id === audioSync.manualTakeAssetId) ?? null
+      : null;
+    const selectedAsset = selectedHistoricalAsset ?? nextAsset;
+
+    if (takeAsset(selectedAsset)) {
+      handledManualTakeIdRef.current = requestId;
+    }
+  }, [
+    audioSync.manualTakeAssetId,
+    audioSync.manualTakeRequestId,
+    nextAsset,
+    playbackMutationsEnabled,
+    session.visualAssets,
+    takeAsset
+  ]);
 
   useEffect(() => {
     return () => {
       if (transitionTimerRef.current !== null) {
         window.clearTimeout(transitionTimerRef.current);
+      }
+
+      if (promptExitTimerRef.current !== null) {
+        window.clearTimeout(promptExitTimerRef.current);
       }
 
       promptRevealRef.current = null;
@@ -190,49 +407,225 @@ export function ShowScreen({ initialSnapshot, isMonitor = false }: ShowScreenPro
   return (
     <main className="relative min-h-screen cursor-none overflow-hidden bg-black">
       <div ref={visualTargetRef} className="absolute inset-0 overflow-hidden">
-        {currentAssetUrl ? (
-          <video
-            key={currentAsset?.id}
-            className="absolute inset-0 h-full w-full object-cover"
-            src={currentAssetUrl}
-            autoPlay
-            loop
-            muted
-            playsInline
-          />
-        ) : (
+        {!videoSlots.some(Boolean) ? (
           <div className="absolute inset-0 subtle-grid bg-aurora" />
-        )}
-
-        {shouldRenderNext && nextAssetUrl ? (
-          <video
-            key={nextAsset?.id}
-            ref={nextVideoRef}
-            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-[2200ms] ${
-              fadeNext ? "opacity-100" : "opacity-0"
-            }`}
-            style={{
-              transitionDuration: `${crossfadeDurationMs}ms`
-            }}
-            src={nextAssetUrl}
-            autoPlay
-            loop
-            muted
-            playsInline
-          />
         ) : null}
+
+        {videoSlots.map((slot, index) => {
+          if (!slot) {
+            return null;
+          }
+
+          const videoSlot = index as VideoSlotIndex;
+          const isIncoming = crossfadingToSlot === videoSlot;
+          const isActive = activeVideoSlot === videoSlot;
+          const isVisible = isVideoSlotVisible({
+            slot: videoSlot,
+            activeSlot: activeVideoSlot,
+            incomingSlot: crossfadingToSlot
+          });
+
+          return (
+            <Fragment key={`persistent-video-slot-${videoSlot}`}>
+              <video
+                ref={videoSlot === 0 ? firstVideoSlotRef : secondVideoSlotRef}
+                data-asset-id={slot.assetId}
+                className="absolute inset-0 h-full w-full bg-black object-cover transition-opacity ease-linear [backface-visibility:hidden] [transform:translateZ(0)]"
+                style={{
+                  opacity: isVisible ? 1 : 0,
+                  zIndex: isIncoming ? 2 : isActive ? 1 : 0,
+                  transitionDuration: `${crossfadeDurationMs}ms`,
+                  willChange: "opacity"
+                }}
+                src={slot.url}
+                autoPlay
+                muted
+                playsInline
+                preload="auto"
+                onEnded={(event) => {
+                  const video = event.currentTarget;
+
+                  if (
+                    shouldAdvanceShowPlaybackAtVideoEnd({
+                      isMonitor,
+                      activeSlotEnded: activeVideoSlotRef.current === videoSlot,
+                      audioSyncConnected: audioSync.connected,
+                      nextAssetReady: Boolean(nextAsset?.id && nextAssetUrl)
+                    })
+                  ) {
+                    takeNext();
+                  }
+
+                  video.currentTime = 0;
+                  void video.play().catch((error) => {
+                    console.warn("[show-video] could not restart ended video", {
+                      assetId: slot.assetId,
+                      videoSlot,
+                      reason:
+                        error instanceof Error ? error.message : String(error)
+                    });
+                  });
+                }}
+                onError={(event) => {
+                  console.error("[show-video] media element failed", {
+                    assetId: slot.assetId,
+                    videoSlot,
+                    mediaErrorCode: event.currentTarget.error?.code ?? null
+                  });
+                }}
+                onWaiting={() => {
+                  if (activeVideoSlotRef.current === videoSlot) {
+                    console.warn("[show-video] active slot is waiting for media", {
+                      assetId: slot.assetId,
+                      videoSlot
+                    });
+                  }
+                }}
+              />
+              <aside
+                aria-hidden={!isVisible}
+                className="pointer-events-none absolute bottom-[clamp(1rem,3vw,3rem)] left-[clamp(1rem,3vw,3rem)] max-w-[min(42rem,78vw)] rounded-2xl border border-white/15 bg-black/55 px-[clamp(0.9rem,1.8vw,1.4rem)] py-[clamp(0.75rem,1.4vw,1.1rem)] shadow-2xl backdrop-blur-md transition-opacity ease-linear"
+                style={{
+                  opacity: isVisible ? 1 : 0,
+                  zIndex: isIncoming ? 26 : isActive ? 25 : 24,
+                  transitionDuration: `${crossfadeDurationMs}ms`
+                }}
+              >
+                <p className="font-mono text-[clamp(0.6rem,1.2vw,0.82rem)] font-semibold uppercase tracking-[0.28em] text-plasma">
+                  {slot.nickname}
+                </p>
+                <p className="mt-2 line-clamp-2 text-[clamp(0.9rem,1.8vw,1.35rem)] font-medium leading-snug text-white">
+                  {slot.promptText}
+                </p>
+              </aside>
+            </Fragment>
+          );
+        })}
       </div>
 
       <div className="pointer-events-none absolute inset-0 z-20 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.1),transparent_30%),linear-gradient(180deg,transparent_55%,rgba(0,0,0,0.45)_100%)]" />
 
-      {promptReveal ? (
-        <PromptTypewriterOverlay promptText={promptReveal.promptText} onComplete={finishPromptReveal} />
+      <WordmarkOverlay
+        targetRef={wordmarkTargetRef}
+        visible={session.wordmarkOverlayVisible}
+        opacity={session.wordmarkOpacity}
+        size={session.wordmarkSize}
+      />
+
+      {showNextRemixProgress ? (
+        <NextRemixProgressOverlay
+          progress={nextRemixProgress}
+          qrOverlayVisible={session.qrOverlayVisible}
+        />
       ) : null}
 
-      {qrOverlay.visible && submissionUrl ? (
+      {promptReveal ? (
+        <PromptTypewriterOverlay
+          nickname={promptReveal.nickname}
+          promptText={promptReveal.promptText}
+          referenceImageUrl={promptReveal.referenceImageUrl}
+          exiting={promptExiting}
+          onComplete={finishPromptReveal}
+        />
+      ) : null}
+
+      {session.qrOverlayVisible && submissionUrl ? (
         <AudienceQrOverlay submissionUrl={submissionUrl} />
       ) : null}
     </main>
+  );
+}
+
+function NextRemixProgressOverlay({
+  progress,
+  qrOverlayVisible
+}: {
+  progress: number | null;
+  qrOverlayVisible: boolean;
+}) {
+  const hasMeasuredProgress = progress !== null;
+
+  return (
+    <aside
+      className={`pointer-events-none absolute left-[clamp(0.75rem,2vw,2rem)] top-[clamp(0.75rem,2vw,2rem)] z-[35] ${
+        qrOverlayVisible
+          ? "right-[clamp(6.75rem,15vw,12rem)]"
+          : "right-[clamp(0.75rem,2vw,2rem)]"
+      }`}
+    >
+      <div className="rounded-2xl border border-white/15 bg-black/45 px-[clamp(0.75rem,1.5vw,1.25rem)] py-[clamp(0.55rem,1.2vw,0.9rem)] shadow-2xl backdrop-blur-md">
+        <p className="font-mono text-[clamp(0.58rem,1.2vw,0.82rem)] font-semibold uppercase tracking-[0.34em] text-white">
+          DREAM SEQUENCE
+        </p>
+        <div
+          className="mt-[clamp(0.45rem,0.9vw,0.7rem)] h-[clamp(0.18rem,0.45vw,0.32rem)] overflow-hidden rounded-full bg-white/15"
+          role="progressbar"
+          aria-label="Next remix generation progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={hasMeasuredProgress ? progress : undefined}
+        >
+          <div
+            className={`h-full rounded-full bg-plasma shadow-[0_0_14px_rgba(109,240,255,0.8)] ${
+              hasMeasuredProgress
+                ? "transition-[width] duration-700 ease-out"
+                : "w-1/3 animate-pulse"
+            }`}
+            style={{
+              width: hasMeasuredProgress ? `${progress}%` : undefined
+            }}
+          />
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function WordmarkOverlay({
+  targetRef,
+  visible,
+  opacity,
+  size
+}: {
+  targetRef: React.RefObject<HTMLDivElement | null>;
+  visible: boolean;
+  opacity: number;
+  size: number;
+}) {
+  return (
+    <aside
+      aria-hidden="true"
+      className={`pointer-events-none absolute inset-0 z-30 grid place-items-center overflow-hidden transition-opacity duration-300 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
+    >
+      <div
+        ref={targetRef}
+        className="relative overflow-hidden"
+        style={{
+          aspectRatio: wordmarkCropLayout.aspectRatio,
+          width: `min(${Math.round(78 * size * 100) / 100}vw, ${
+            Math.round(115 * size * 100) / 100
+          }vh)`
+        }}
+      >
+        <Image
+          src="/vivid-fever-dreams-wordmark.png"
+          alt=""
+          width={3522}
+          height={3522}
+          priority
+          draggable={false}
+          className="absolute h-auto max-w-none select-none"
+          style={{
+            left: wordmarkCropLayout.imageLeft,
+            top: wordmarkCropLayout.imageTop,
+            width: wordmarkCropLayout.imageWidth,
+            opacity
+          }}
+        />
+      </div>
+    </aside>
   );
 }
 
@@ -252,7 +645,19 @@ function AudienceQrOverlay({ submissionUrl }: { submissionUrl: string }) {
   );
 }
 
-function PromptTypewriterOverlay({ promptText, onComplete }: { promptText: string; onComplete: () => void }) {
+function PromptTypewriterOverlay({
+  nickname,
+  promptText,
+  referenceImageUrl,
+  exiting,
+  onComplete
+}: {
+  nickname: string | null;
+  promptText: string;
+  referenceImageUrl: string | null;
+  exiting: boolean;
+  onComplete: () => void;
+}) {
   const [visibleCharacterCount, setVisibleCharacterCount] = useState(0);
 
   useEffect(() => {
@@ -304,20 +709,61 @@ function PromptTypewriterOverlay({ promptText, onComplete }: { promptText: strin
 
   return (
     <div
-      className="pointer-events-none absolute inset-0 z-40 grid place-items-center bg-black/80 px-6 backdrop-blur-sm"
+      className={`pointer-events-none absolute inset-0 z-40 grid place-items-center bg-[radial-gradient(circle_at_center,rgba(0,0,0,0.28),transparent_72%)] px-6 transition-opacity duration-500 ${
+        exiting ? "opacity-0" : "opacity-100"
+      }`}
       role="status"
       aria-live="polite"
-      aria-label={`Incoming remix prompt: ${promptText}`}
+      aria-label={`Incoming remix${nickname ? ` from ${nickname}` : ""}${
+        referenceImageUrl ? " with an attached reference image" : ""
+      }: ${promptText}`}
     >
-      <div className="w-full max-w-5xl" aria-hidden="true">
-        <p className="font-mono text-[10px] uppercase tracking-[0.38em] text-plasma sm:text-xs">Incoming remix</p>
-        <p className="mt-5 whitespace-pre-wrap break-words font-mono text-[clamp(1.4rem,4vw,3.6rem)] leading-[1.22] text-white">
-          {promptText.slice(0, visibleCharacterCount)}
-          <span className="ml-1 inline-block animate-pulse text-plasma">▋</span>
-        </p>
+      <div
+        className={`w-full rounded-[2rem] border border-white/10 bg-black/30 p-[clamp(1rem,2.5vw,2rem)] shadow-2xl backdrop-blur-[2px] ${
+          referenceImageUrl
+            ? "grid max-w-6xl items-center gap-[clamp(1rem,3vw,2.5rem)] lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]"
+            : "max-w-5xl"
+        }`}
+        aria-hidden="true"
+      >
+        {referenceImageUrl ? (
+          <div className="relative aspect-[4/3] overflow-hidden rounded-[1.4rem] border border-white/12 bg-black/40">
+            <Image
+              src={referenceImageUrl}
+              alt=""
+              fill
+              unoptimized
+              sizes="(max-width: 1024px) 88vw, 42vw"
+              className="object-cover"
+            />
+          </div>
+        ) : null}
+
+        <div className="px-[clamp(0.25rem,1.5vw,1rem)] py-[clamp(0.25rem,1vw,0.75rem)]">
+          <p className="font-mono text-[10px] uppercase tracking-[0.38em] text-plasma sm:text-xs">
+            Incoming remix
+          </p>
+          {nickname ? (
+            <p className="mt-4 font-mono text-[clamp(0.85rem,1.8vw,1.25rem)] uppercase tracking-[0.28em] text-white/65">
+              {nickname}
+            </p>
+          ) : null}
+          <p className="mt-5 whitespace-pre-wrap break-words font-mono text-[clamp(1.25rem,3.5vw,3.35rem)] leading-[1.22] text-white">
+            {promptText.slice(0, visibleCharacterCount)}
+            <span className="ml-1 inline-block animate-pulse text-plasma">▋</span>
+          </p>
+        </div>
       </div>
     </div>
   );
+}
+
+function normalizeShowProgress(progress: number | null | undefined) {
+  if (typeof progress !== "number" || !Number.isFinite(progress)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(progress)));
 }
 
 function resolvePlaybackUrl(url: string | null) {
@@ -343,4 +789,85 @@ function resolvePlaybackUrl(url: string | null) {
   } catch {
     return url;
   }
+}
+
+async function prepareVideoForCrossfade(video: HTMLVideoElement) {
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    await waitForVideoEvent(video, ["loadeddata", "canplay"], 15_000);
+  }
+
+  await video.play();
+  await waitForDecodedVideoFrame(video);
+}
+
+function waitForVideoEvent(
+  video: HTMLVideoElement,
+  eventNames: Array<"canplay" | "loadeddata">,
+  timeoutMs: number
+) {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.removeEventListener("error", handleError);
+
+      for (const eventName of eventNames) {
+        video.removeEventListener(eventName, handleReady);
+      }
+    };
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const handleReady = () => finish(resolve);
+    const handleError = () =>
+      finish(() => reject(new Error("The browser could not decode the remix video.")));
+    const timeout = window.setTimeout(() => {
+      finish(() => reject(new Error("Timed out waiting for a playable remix frame.")));
+    }, timeoutMs);
+
+    for (const eventName of eventNames) {
+      video.addEventListener(eventName, handleReady, {
+        once: true
+      });
+    }
+
+    video.addEventListener("error", handleError, {
+      once: true
+    });
+  });
+}
+
+function waitForDecodedVideoFrame(video: HTMLVideoElement) {
+  if (typeof video.requestVideoFrameCallback === "function") {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      const callbackId = video.requestVideoFrameCallback(finish);
+      const timeout = window.setTimeout(() => {
+        video.cancelVideoFrameCallback(callbackId);
+        finish();
+      }, 3_000);
+    });
+  }
+
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
 }
