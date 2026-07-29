@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
+import { parseAudioSyncRelayToken } from "@/lib/audio-sync-relay-token";
 import { db } from "@/lib/db";
 import { reconcilePendingRenderJobs } from "@/lib/submission-pipeline";
+
+export const maxDuration = 60;
 
 type ReconcileRouteProps = {
   params: Promise<{
@@ -9,10 +12,22 @@ type ReconcileRouteProps = {
   }>;
 };
 
-export async function POST(_request: Request, { params }: ReconcileRouteProps) {
+export async function POST(request: Request, { params }: ReconcileRouteProps) {
+  const { sessionId } = await params;
+  const authorization = request.headers.get("authorization");
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  const relayPayload = token ? parseAudioSyncRelayToken(token) : null;
   const user = await getCurrentUser();
+  const authorizedUserId =
+    relayPayload?.sessionId === sessionId ? relayPayload.userId : (user?.id ?? null);
 
-  if (!user) {
+  if (!authorizedUserId) {
+    console.warn("[render-reconcile] authorization rejected", {
+      sessionId,
+      reason: "missing-or-invalid-session-credentials"
+    });
     return NextResponse.json(
       {
         error: "Unauthorized"
@@ -23,15 +38,18 @@ export async function POST(_request: Request, { params }: ReconcileRouteProps) {
     );
   }
 
-  const { sessionId } = await params;
   const session = await db.dJSession.findFirst({
     where: {
       id: sessionId,
-      userId: user.id
+      userId: authorizedUserId
     }
   });
 
   if (!session) {
+    console.warn("[render-reconcile] authorization rejected", {
+      sessionId,
+      reason: "session-not-owned"
+    });
     return NextResponse.json(
       {
         error: "Session not found."

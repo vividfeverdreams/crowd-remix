@@ -48,6 +48,7 @@ export function DashboardShell({
     boolean | null
   >(null);
   const generationMenuRef = useRef<HTMLDetailsElement>(null);
+  const reconciliationInFlightRef = useRef(false);
   const submittedWordmarkOpacityRef = useRef(initialSnapshot.session.wordmarkOpacity);
   const submittedWordmarkSizeRef = useRef(initialSnapshot.session.wordmarkSize);
   const deferredSnapshot = useDeferredValue(snapshot);
@@ -99,36 +100,51 @@ export function DashboardShell({
     }
 
     const reconcile = async () => {
-      const response = await fetch(`/api/sessions/${session.id}/reconcile`, {
-        method: "POST"
-      });
-
-      if (!response.ok) {
+      if (reconciliationInFlightRef.current) {
         return;
       }
 
-      const payload = (await response.json()) as {
-        jobs?: Array<{
-          id: string;
-          progress: number | null;
-        }>;
-      };
+      reconciliationInFlightRef.current = true;
 
-      if (!payload.jobs?.length) {
-        return;
-      }
-
-      setRenderProgress((current) => {
-        const next = { ...current };
-
-        for (const job of payload.jobs ?? []) {
-          if (typeof job.progress === "number") {
-            next[job.id] = normalizeVideoProgress(job.progress, current[job.id]);
+      try {
+        const response = await fetch(`/api/sessions/${session.id}/reconcile`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${audioSyncRelayToken}`
           }
+        });
+
+        if (!response.ok) {
+          return;
         }
 
-        return next;
-      });
+        const payload = (await response.json()) as {
+          jobs?: Array<{
+            id: string;
+            progress: number | null;
+          }>;
+        };
+
+        if (!payload.jobs?.length) {
+          return;
+        }
+
+        setRenderProgress((current) => {
+          const next = { ...current };
+
+          for (const job of payload.jobs ?? []) {
+            if (typeof job.progress === "number") {
+              next[job.id] = normalizeVideoProgress(job.progress, current[job.id]);
+            }
+          }
+
+          return next;
+        });
+      } catch {
+        // A later interval retries transient network failures.
+      } finally {
+        reconciliationInFlightRef.current = false;
+      }
     };
 
     void reconcile();
@@ -137,7 +153,11 @@ export function DashboardShell({
     return () => {
       window.clearInterval(interval);
     };
-  }, [deferredSnapshot.queueHealth.waitingOnRender, session.id]);
+  }, [
+    audioSyncRelayToken,
+    deferredSnapshot.queueHealth.waitingOnRender,
+    session.id
+  ]);
 
   useEffect(() => {
     setShowUrlDisplay(resolveAbsoluteUrl(showLink));
