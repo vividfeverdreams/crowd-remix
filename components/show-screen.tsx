@@ -6,6 +6,7 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
+  getAuthoritativePlaybackCandidate,
   getChronologicalPlaybackRotation,
   getIntroducedPlaybackAssetIds,
   getNextPlaybackRotationAsset,
@@ -170,17 +171,24 @@ export function ShowScreen({
     requestedAssetId && requestedAssetId !== activeAssetId
       ? playableAssets.find((asset) => asset.id === requestedAssetId) ?? null
       : null;
+  const authoritativeCurrentAsset = getAuthoritativePlaybackCandidate(
+    currentAsset,
+    activeAssetId,
+    nextAsset?.id
+  );
   const authoritativeNextAsset =
     currentAsset?.id === activeAssetId &&
     nextAsset?.id &&
     nextAsset.id !== activeAssetId
       ? nextAsset
       : null;
-  const candidateAsset = isMonitor
-    ? currentAsset?.id && currentAsset.id !== activeAssetId
-      ? currentAsset
-      : null
-    : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset;
+  const candidateAsset =
+    authoritativeCurrentAsset ??
+    (isMonitor
+      ? null
+      : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset);
+  const boundaryAuthorizedAssetId =
+    authoritativeCurrentAsset?.id ?? authorizedBoundaryAssetId;
   const preparedBoundaryHandoff = Boolean(
     standbyTransition &&
       standbyReadyAssetId === standbyTransition.assetId &&
@@ -189,7 +197,7 @@ export function ShowScreen({
         isMonitor,
         audioSyncConnected: audioSync.connected,
         candidateAssetId: standbyTransition.assetId,
-        authorizedAssetId: authorizedBoundaryAssetId
+        authorizedAssetId: boundaryAuthorizedAssetId
       })
   );
 
@@ -557,7 +565,9 @@ export function ShowScreen({
         isMonitor,
         audioSyncConnected: audioSync.connected,
         candidateAssetId: transition?.assetId ?? null,
-        authorizedAssetId: authorizedBoundaryAssetIdRef.current
+        authorizedAssetId:
+          authoritativeCurrentAsset?.id ??
+          authorizedBoundaryAssetIdRef.current
       });
 
       if (
@@ -618,7 +628,13 @@ export function ShowScreen({
           handoffInFlightRef.current = false;
         });
     },
-    [audioSync.connected, commitPlaybackTransition, getVideoElement, isMonitor]
+    [
+      audioSync.connected,
+      authoritativeCurrentAsset?.id,
+      commitPlaybackTransition,
+      getVideoElement,
+      isMonitor
+    ]
   );
 
   useEffect(() => {

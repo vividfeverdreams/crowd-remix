@@ -8,6 +8,7 @@ import {
   isParticipantBanned
 } from "@/lib/participant-session";
 import { promoteOldestReadyAsset } from "@/lib/playback-queue";
+import { takePlaybackAsset } from "@/lib/playback-transition";
 import { getDemoLoopUrl, persistVideoAsset } from "@/lib/storage";
 import { formatVideoDuration } from "@/lib/video-duration";
 
@@ -1080,11 +1081,31 @@ async function markRenderJobReady(
     return false;
   }
 
+  let finalPlacement = placement;
+
+  if (placement !== "current") {
+    const promotedToCurrent = await takePlaybackAsset(
+      renderJob.sessionId,
+      assetId
+    );
+
+    if (promotedToCurrent) {
+      finalPlacement = "current";
+    } else {
+      console.warn("[render-job] completed asset could not become current", {
+        sessionId: renderJob.sessionId,
+        renderJobId,
+        assetId,
+        placement
+      });
+    }
+  }
+
   console.info("[render-job] completed and placed asset", {
     sessionId: renderJob.sessionId,
     renderJobId,
     assetId,
-    placement
+    placement: finalPlacement
   });
 
   return true;

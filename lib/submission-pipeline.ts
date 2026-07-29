@@ -3,6 +3,10 @@ import { assessSubmission } from "@/lib/ai-assessment";
 import { checkSubmissionRateLimit } from "@/lib/rate-limit";
 import { recordAuditEvent } from "@/lib/audit";
 import { promoteOldestReadyAsset } from "@/lib/playback-queue";
+import {
+  shouldRecoverReadyPlaybackAsset,
+  takePlaybackAsset
+} from "@/lib/playback-transition";
 import { hashValue, normalizePromptText } from "@/lib/utils";
 import {
   completeGeminiVideoRender,
@@ -302,6 +306,9 @@ export async function attemptAutomatedSelection(sessionId: string) {
         select: {
           id: true
         },
+        orderBy: {
+          createdAt: "asc"
+        },
         take: 1
       },
       submissions: {
@@ -327,8 +334,37 @@ export async function attemptAutomatedSelection(sessionId: string) {
     return null;
   }
 
-  if (session.renderJobs.length > 0 || session.visualAssets.length > 0) {
+  if (session.renderJobs.length > 0) {
     return null;
+  }
+
+  const readyAsset = session.visualAssets[0];
+
+  if (readyAsset) {
+    if (
+      !shouldRecoverReadyPlaybackAsset({
+        readyAssetId: readyAsset.id,
+        nextAssetId: session.playbackState.nextAssetId,
+        lastTransitionAt: session.playbackState.lastTransitionAt
+      })
+    ) {
+      return null;
+    }
+
+    const transitioned = await takePlaybackAsset(sessionId, readyAsset.id);
+
+    if (!transitioned) {
+      console.warn("[playback-queue] ready asset could not become current", {
+        sessionId,
+        assetId: readyAsset.id
+      });
+      return null;
+    }
+
+    console.info("[playback-queue] recovered ready asset as current", {
+      sessionId,
+      assetId: readyAsset.id
+    });
   }
 
   const promotedAssetId = await promoteOldestReadyAsset(sessionId);
@@ -348,7 +384,12 @@ export async function attemptAutomatedSelection(sessionId: string) {
     return null;
   }
 
-  return queueAutomatedRender(sessionId, nextSubmission.id, session.playbackState.currentAssetId ? "remix" : "seed", nextSubmission.rankingResult.winningPrompt);
+  return queueAutomatedRender(
+    sessionId,
+    nextSubmission.id,
+    readyAsset || session.playbackState.currentAssetId ? "remix" : "seed",
+    nextSubmission.rankingResult.winningPrompt
+  );
 }
 
 class AutomatedRenderSubmissionClaimConflict extends Error {}

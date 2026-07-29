@@ -103,9 +103,27 @@ export function shouldShowPlaybackIntroduction(
 ) {
   return Boolean(
     asset.id &&
-      asset.status === "ready" &&
+      (asset.status === "ready" || asset.status === "live") &&
       !introducedAssetIds.has(asset.id)
   );
+}
+
+export function getAuthoritativePlaybackCandidate<
+  Asset extends {
+    id: string;
+  }
+>(
+  currentAsset: Asset | null,
+  activeAssetId: string | null | undefined,
+  queuedNextAssetId?: string | null
+) {
+  if (activeAssetId && queuedNextAssetId === activeAssetId) {
+    return null;
+  }
+
+  return currentAsset?.id && currentAsset.id !== activeAssetId
+    ? currentAsset
+    : null;
 }
 
 export function shouldStartAutomaticPlaybackTransition({

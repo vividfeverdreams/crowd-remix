@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { recordAuditEvent } from "@/lib/audit";
-import { promoteOldestReadyAsset } from "@/lib/playback-queue";
+import { completePlaybackTransition } from "@/lib/playback-transition";
 import {
   normalizeShowWordmarkOpacity,
   normalizeShowWordmarkSize,
@@ -22,6 +22,8 @@ import {
 } from "@/lib/submission-rate-limit-state";
 import { createSessionCode, normalizePromptText } from "@/lib/utils";
 import { queueAutomatedRender } from "@/lib/submission-pipeline";
+
+export { completePlaybackTransition } from "@/lib/playback-transition";
 
 type SessionInput = {
   name: string;
@@ -478,7 +480,8 @@ export async function cueHistoricalGeneration(sessionId: string, userId: string,
         playbackState: {
           select: {
             id: true,
-            currentAssetId: true
+            currentAssetId: true,
+            nextAssetId: true
           }
         }
       }
@@ -516,22 +519,37 @@ export async function cueHistoricalGeneration(sessionId: string, userId: string,
       return null;
     }
 
+    const cueClaim = await tx.playbackState.updateMany({
+      where: {
+        id: session.playbackState.id,
+        currentAssetId: session.playbackState.currentAssetId,
+        nextAssetId: session.playbackState.nextAssetId
+      },
+      data: {
+        nextAssetId: asset.id,
+        status: "live"
+      }
+    });
+
+    if (cueClaim.count !== 1) {
+      const latestPlayback = await tx.playbackState.findUnique({
+        where: {
+          id: session.playbackState.id
+        },
+        select: {
+          currentAssetId: true
+        }
+      });
+
+      return latestPlayback?.currentAssetId === asset.id ? asset : null;
+    }
+
     await tx.visualAsset.update({
       where: {
         id: asset.id
       },
       data: {
         status: "ready"
-      }
-    });
-
-    await tx.playbackState.update({
-      where: {
-        id: session.playbackState.id
-      },
-      data: {
-        nextAssetId: asset.id,
-        status: "live"
       }
     });
 
@@ -551,94 +569,6 @@ export async function cueHistoricalGeneration(sessionId: string, userId: string,
   });
 
   return selectedAsset;
-}
-
-export async function completePlaybackTransition(sessionId: string, expectedNextAssetId?: string) {
-  const result = await db.$transaction(async (tx: any) => {
-    const playback = await tx.playbackState.findUnique({
-      where: {
-        sessionId
-      }
-    });
-
-    if (
-      !playback?.nextAssetId ||
-      (expectedNextAssetId && playback.nextAssetId !== expectedNextAssetId)
-    ) {
-      return null;
-    }
-
-    const transitionClaim = await tx.playbackState.updateMany({
-      where: {
-        id: playback.id,
-        nextAssetId: playback.nextAssetId
-      },
-      data: {
-        currentAssetId: playback.nextAssetId,
-        nextAssetId: null,
-        status: "live",
-        lastTransitionAt: new Date()
-      }
-    });
-
-    if (transitionClaim.count !== 1) {
-      return null;
-    }
-
-    if (playback.currentAssetId) {
-      await tx.visualAsset.update({
-        where: {
-          id: playback.currentAssetId
-        },
-        data: {
-          status: "archived"
-        }
-      });
-    }
-
-    await tx.visualAsset.update({
-      where: {
-        id: playback.nextAssetId as string
-      },
-      data: {
-        status: "live"
-      }
-    });
-
-    const queuedAssetId = await promoteOldestReadyAsset(sessionId, tx);
-
-    return {
-      queuedAssetId,
-      transitionedAssetId: playback.nextAssetId as string
-    };
-  });
-
-  if (!result) {
-    return null;
-  }
-
-  try {
-    await recordAuditEvent({
-      type: "playback.transitioned",
-      summary: "Crossfaded to the queued visual asset",
-      sessionId
-    });
-  } catch (error) {
-    console.error("[playback-transition] audit logging failed", {
-      sessionId,
-      transitionedAssetId: result.transitionedAssetId,
-      failureReason:
-        error instanceof Error ? error.message : "Unknown audit logging error"
-    });
-  }
-
-  console.info("[playback-transition] promoted live asset", {
-    sessionId,
-    transitionedAssetId: result.transitionedAssetId,
-    queuedAssetId: result.queuedAssetId
-  });
-
-  return true;
 }
 
 export async function queueFallbackRemix(sessionId: string, userId: string) {

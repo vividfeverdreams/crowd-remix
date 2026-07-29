@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
+  getAuthoritativePlaybackCandidate,
   getChronologicalPlaybackRotation,
   getIntroducedPlaybackAssetIds,
   getNextPlaybackRotationAsset,
@@ -207,7 +208,7 @@ describe("remix transition cues", () => {
     ]);
   });
 
-  it("shows a ready asset introduction once and skips played rotation assets", () => {
+  it("shows a newly authoritative asset introduction once and skips played rotation assets", () => {
     const introducedAssetIds = new Set(["asset-seen"]);
 
     expect(
@@ -239,6 +240,16 @@ describe("remix transition cues", () => {
         },
         introducedAssetIds
       )
+    ).toBe(true);
+    introducedAssetIds.add("asset-live");
+    expect(
+      shouldShowPlaybackIntroduction(
+        {
+          id: "asset-live",
+          status: "live"
+        },
+        introducedAssetIds
+      )
     ).toBe(false);
     expect(
       shouldShowPlaybackIntroduction(
@@ -249,6 +260,34 @@ describe("remix transition cues", () => {
         introducedAssetIds
       )
     ).toBe(false);
+  });
+
+  it("prioritizes a server-authoritative current asset that differs from the visible slot", () => {
+    const authoritativeAsset = {
+      id: "asset-server-current"
+    };
+
+    expect(
+      getAuthoritativePlaybackCandidate(authoritativeAsset, "asset-visible")
+    ).toBe(authoritativeAsset);
+    expect(
+      getAuthoritativePlaybackCandidate(authoritativeAsset, authoritativeAsset.id)
+    ).toBeNull();
+    expect(
+      getAuthoritativePlaybackCandidate(null, "asset-visible")
+    ).toBeNull();
+  });
+
+  it("does not mistake the outgoing server snapshot for a rollback while its queued next asset is already visible", () => {
+    expect(
+      getAuthoritativePlaybackCandidate(
+        {
+          id: "asset-outgoing"
+        },
+        "asset-incoming",
+        "asset-incoming"
+      )
+    ).toBeNull();
   });
 
   it.each([

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     updateManyJobs: vi.fn(),
     claimSubmission: vi.fn(),
     promoteOldestReadyAsset: vi.fn(),
+    takePlaybackAsset: vi.fn(),
     reconcileRenderJob: vi.fn(),
     completeGeminiVideoRender: vi.fn(),
     startVideoRender: vi.fn()
@@ -78,6 +79,16 @@ vi.mock("@/lib/playback-queue", () => ({
   promoteOldestReadyAsset: mocks.promoteOldestReadyAsset
 }));
 
+vi.mock("@/lib/playback-transition", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/playback-transition")>();
+
+  return {
+    ...actual,
+    takePlaybackAsset: mocks.takePlaybackAsset
+  };
+});
+
 vi.mock("@/lib/google-key-store", () => ({
   getEffectiveGeminiApiKeyForUser: vi.fn().mockResolvedValue("test-api-key")
 }));
@@ -96,6 +107,7 @@ describe("submission render queue", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.promoteOldestReadyAsset.mockResolvedValue(null);
+    mocks.takePlaybackAsset.mockResolvedValue(true);
     mocks.updateManyJobs.mockResolvedValue({
       count: 1
     });
@@ -133,7 +145,8 @@ describe("submission render queue", () => {
         autoSelectEnabled: true,
         playbackState: {
           currentAssetId: "asset-current",
-          nextAssetId: null,
+          nextAssetId: "asset-ready",
+          lastTransitionAt: new Date(0),
           emergencyPaused: false
         },
         renderJobs: [],
@@ -618,39 +631,84 @@ describe("submission render queue", () => {
     expect(mocks.startVideoRender).not.toHaveBeenCalled();
   });
 
-  it("does not render while a fresh ready asset is still unplayed", async () => {
-    mocks.findSession.mockResolvedValue({
-      id: "session-1",
-      userId: "user-1",
-      autoSelectEnabled: true,
-      playbackState: {
-        currentAssetId: "asset-current",
-        nextAssetId: null,
-        emergencyPaused: false
-      },
-      renderJobs: [],
-      visualAssets: [
-        {
-          id: "asset-ready"
-        }
-      ],
-      submissions: [
-        {
-          id: "submission-next",
-          rankingResult: {
-            score: 92,
-            winningPrompt: "Wait for the ready asset"
+  it("recovers a fresh ready asset and continues with the next approved render", async () => {
+    mocks.findSession
+      .mockResolvedValueOnce({
+        id: "session-1",
+        userId: "user-1",
+        autoSelectEnabled: true,
+        playbackState: {
+          currentAssetId: "asset-current",
+          nextAssetId: null,
+          emergencyPaused: false
+        },
+        renderJobs: [],
+        visualAssets: [
+          {
+            id: "asset-ready"
           }
-        }
-      ]
+        ],
+        submissions: [
+          {
+            id: "submission-next",
+            rankingResult: {
+              score: 92,
+              winningPrompt: "Wait for the ready asset"
+            }
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        id: "session-1",
+        userId: "user-1",
+        updatedAt: new Date("2026-07-29T17:54:00.000Z"),
+        videoDurationSeconds: 4,
+        playbackState: {
+          currentAssetId: "asset-ready",
+          currentAsset: {
+            id: "asset-ready",
+            publicUrl: "https://example.com/ready.mp4",
+            sourceVideoId: "video-ready",
+            status: "live"
+          }
+        },
+        renderJobs: [],
+        visualAssets: []
+      });
+
+    mocks.createAsset.mockResolvedValue({
+      id: "asset-next"
+    });
+    mocks.createJob.mockResolvedValue({
+      id: "render-next",
+      outputAsset: {
+        id: "asset-next"
+      }
+    });
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "request-next",
+      outputUri: null,
+      strategy: "stateful_edit"
     });
 
-    await expect(attemptAutomatedSelection("session-1")).resolves.toBeNull();
+    await expect(attemptAutomatedSelection("session-1")).resolves.toMatchObject({
+      id: "render-next"
+    });
 
-    expect(mocks.promoteOldestReadyAsset).not.toHaveBeenCalled();
-    expect(mocks.claimSubmission).not.toHaveBeenCalled();
-    expect(mocks.createAsset).not.toHaveBeenCalled();
-    expect(mocks.startVideoRender).not.toHaveBeenCalled();
+    expect(mocks.takePlaybackAsset).toHaveBeenCalledWith(
+      "session-1",
+      "asset-ready"
+    );
+    expect(mocks.promoteOldestReadyAsset).toHaveBeenCalledWith("session-1");
+    expect(mocks.claimSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "submission-next"
+        })
+      })
+    );
+    expect(mocks.startVideoRender).toHaveBeenCalled();
   });
 
   it("does not render while another render is active", async () => {
@@ -686,6 +744,41 @@ describe("submission render queue", () => {
     expect(mocks.promoteOldestReadyAsset).not.toHaveBeenCalled();
     expect(mocks.claimSubmission).not.toHaveBeenCalled();
     expect(mocks.createAsset).not.toHaveBeenCalled();
+    expect(mocks.startVideoRender).not.toHaveBeenCalled();
+  });
+
+  it("does not immediately undo a fresh transition by taking its staged ready backlog", async () => {
+    mocks.findSession.mockResolvedValue({
+      id: "session-1",
+      userId: "user-1",
+      autoSelectEnabled: true,
+      playbackState: {
+        currentAssetId: "asset-manual",
+        nextAssetId: "asset-ready-backlog",
+        lastTransitionAt: new Date(),
+        emergencyPaused: false
+      },
+      renderJobs: [],
+      visualAssets: [
+        {
+          id: "asset-ready-backlog"
+        }
+      ],
+      submissions: [
+        {
+          id: "submission-next",
+          rankingResult: {
+            score: 92,
+            winningPrompt: "Do not undo the manual take"
+          }
+        }
+      ]
+    });
+
+    await expect(attemptAutomatedSelection("session-1")).resolves.toBeNull();
+
+    expect(mocks.takePlaybackAsset).not.toHaveBeenCalled();
+    expect(mocks.claimSubmission).not.toHaveBeenCalled();
     expect(mocks.startVideoRender).not.toHaveBeenCalled();
   });
 });

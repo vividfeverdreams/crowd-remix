@@ -39,6 +39,7 @@ const testDoubles = vi.hoisted(() => {
     getEffectiveGeminiApiKeyForUser: vi.fn(),
     persistVideoAsset: vi.fn(),
     promoteOldestReadyAsset: vi.fn(),
+    takePlaybackAsset: vi.fn(async () => true),
     recordAuditEvent: vi.fn(),
     transaction
   };
@@ -54,6 +55,10 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/playback-queue", () => ({
   promoteOldestReadyAsset: testDoubles.promoteOldestReadyAsset
+}));
+
+vi.mock("@/lib/playback-transition", () => ({
+  takePlaybackAsset: testDoubles.takePlaybackAsset
 }));
 
 vi.mock("@/lib/storage", () => ({
@@ -774,6 +779,11 @@ describe("Gemini Omni video requests", () => {
     await expect(
       completeGeminiVideoRender("v1_webhook-edit", outputUri)
     ).resolves.toBe("completed");
+
+    expect(testDoubles.takePlaybackAsset).toHaveBeenCalledWith(
+      "session-1",
+      "asset-1"
+    );
 
     expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({
       where: {

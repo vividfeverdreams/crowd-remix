@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { getCurrentUser } from "@/lib/auth";
 import {
+  completePlaybackTransition,
   cueHistoricalGeneration,
   forceTransitionToNext,
   queueFallbackRemix,
@@ -90,9 +92,47 @@ export async function POST(request: Request, { params }: ControlRouteProps) {
         assetId: selectedAsset.id
       };
 
-      await publishAudioSyncMessage(takeMessage);
+      const transitioned = await completePlaybackTransition(
+        sessionId,
+        selectedAsset.id
+      );
 
-      console.info("[manual-generation] queued historical asset and sent take", {
+      if (!transitioned) {
+        return NextResponse.json(
+          {
+            error: "That generation could not become the live video."
+          },
+          {
+            status: 409
+          }
+        );
+      }
+
+      try {
+        await publishAudioSyncMessage(takeMessage);
+      } catch (error) {
+        console.error("[manual-generation] take relay failed after promotion", {
+          sessionId,
+          assetId: selectedAsset.id,
+          failureReason:
+            error instanceof Error ? error.message : "Unknown take relay error"
+        });
+      }
+
+      waitUntil(
+        attemptAutomatedSelection(sessionId).catch((error: unknown) => {
+          console.error("[manual-generation] automated selection failed", {
+            sessionId,
+            assetId: selectedAsset.id,
+            failureReason:
+              error instanceof Error
+                ? error.message
+                : "Unknown automated selection error"
+          });
+        })
+      );
+
+      console.info("[manual-generation] promoted historical asset and sent take", {
         sessionId,
         assetId: selectedAsset.id,
         hasUserPrompt: Boolean(selectedAsset.sourceSubmission?.rawText)

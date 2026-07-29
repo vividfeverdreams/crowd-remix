@@ -76,6 +76,23 @@ export function getInitialGenerationPresentation(input: {
   };
 }
 
+export function shouldReconcileSession({
+  sessionStatus,
+  waitingOnRender,
+  approvedCount,
+  hasReadyAsset
+}: {
+  sessionStatus: string;
+  waitingOnRender: boolean;
+  approvedCount: number;
+  hasReadyAsset: boolean;
+}) {
+  return (
+    sessionStatus === "live" &&
+    (waitingOnRender || approvedCount > 0 || hasReadyAsset)
+  );
+}
+
 export function DashboardShell({
   initialSnapshot,
   currentUserName,
@@ -149,8 +166,17 @@ export function DashboardShell({
       ? activeRenderJob.status.replace("_", " ")
       : `${renderProgress[activeRenderJob.id]}%`
     : `${session.renderJobs.length} recent`;
+  const reconciliationNeeded = shouldReconcileSession({
+    sessionStatus: session.status,
+    waitingOnRender: deferredSnapshot.queueHealth.waitingOnRender,
+    approvedCount: deferredSnapshot.queueHealth.approvedCount,
+    hasReadyAsset: session.visualAssets.some(
+      (asset) => asset.status === "ready" && Boolean(asset.publicUrl)
+    )
+  });
+
   useEffect(() => {
-    if (!deferredSnapshot.queueHealth.waitingOnRender) {
+    if (!reconciliationNeeded) {
       return;
     }
 
@@ -210,7 +236,7 @@ export function DashboardShell({
     };
   }, [
     audioSyncRelayToken,
-    deferredSnapshot.queueHealth.waitingOnRender,
+    reconciliationNeeded,
     session.id
   ]);
 

@@ -24,6 +24,9 @@ vi.mock("@/lib/db", () => {
       findUnique: mocks.findPlayback,
       update: mocks.updatePlayback,
       updateMany: mocks.updatePlaybackMany
+    },
+    promptSubmission: {
+      update: vi.fn()
     }
   };
 
@@ -62,6 +65,7 @@ vi.mock("@/lib/submission-pipeline", () => ({
 }));
 
 import { completePlaybackTransition, cueHistoricalGeneration } from "@/lib/session-service";
+import { takePlaybackAsset } from "@/lib/playback-transition";
 
 describe("manual historical generation cue", () => {
   beforeEach(() => {
@@ -73,6 +77,10 @@ describe("manual historical generation cue", () => {
     });
     mocks.promoteReadyAsset.mockResolvedValue(null);
     mocks.recordAuditEvent.mockResolvedValue({});
+    mocks.findAsset.mockResolvedValue({
+      id: "asset-remix",
+      sourceSubmissionId: null
+    });
   });
 
   it("places an owned archived generation in the next slot", async () => {
@@ -80,7 +88,8 @@ describe("manual historical generation cue", () => {
       id: "session-1",
       playbackState: {
         id: "playback-1",
-        currentAssetId: "asset-live"
+        currentAssetId: "asset-live",
+        nextAssetId: null
       }
     });
     mocks.findAsset.mockResolvedValue({
@@ -105,9 +114,11 @@ describe("manual historical generation cue", () => {
         status: "ready"
       }
     });
-    expect(mocks.updatePlayback).toHaveBeenCalledWith({
+    expect(mocks.updatePlaybackMany).toHaveBeenCalledWith({
       where: {
-        id: "playback-1"
+        id: "playback-1",
+        currentAssetId: "asset-live",
+        nextAssetId: null
       },
       data: {
         nextAssetId: "asset-history",
@@ -139,6 +150,37 @@ describe("manual historical generation cue", () => {
     expect(mocks.findAsset).not.toHaveBeenCalled();
     expect(mocks.updatePlayback).not.toHaveBeenCalled();
   });
+
+  it("does not create current and next references to the same asset during a cue race", async () => {
+    mocks.findSession.mockResolvedValue({
+      id: "session-1",
+      playbackState: {
+        id: "playback-1",
+        currentAssetId: "asset-live",
+        nextAssetId: null
+      }
+    });
+    mocks.findAsset.mockResolvedValue({
+      id: "asset-history",
+      title: "DREAM SEQUENCE",
+      sourceSubmission: null
+    });
+    mocks.updatePlaybackMany.mockResolvedValueOnce({
+      count: 0
+    });
+    mocks.findPlayback.mockResolvedValue({
+      currentAssetId: "asset-history"
+    });
+
+    await expect(
+      cueHistoricalGeneration("session-1", "user-1", "asset-history")
+    ).resolves.toMatchObject({
+      id: "asset-history"
+    });
+
+    expect(mocks.updateAsset).not.toHaveBeenCalled();
+    expect(mocks.updatePlayback).not.toHaveBeenCalled();
+  });
 });
 
 describe("playback transition target", () => {
@@ -151,6 +193,10 @@ describe("playback transition target", () => {
     });
     mocks.promoteReadyAsset.mockResolvedValue(null);
     mocks.recordAuditEvent.mockResolvedValue({});
+    mocks.findAsset.mockResolvedValue({
+      id: "asset-remix",
+      sourceSubmissionId: null
+    });
   });
 
   it("promotes the requested next asset", async () => {
@@ -167,6 +213,7 @@ describe("playback transition target", () => {
     expect(mocks.updatePlaybackMany).toHaveBeenCalledWith({
       where: {
         id: "playback-1",
+        currentAssetId: "asset-live",
         nextAssetId: "asset-remix"
       },
       data: {
@@ -219,7 +266,7 @@ describe("playback transition target", () => {
     errorSpy.mockRestore();
   });
 
-  it("ignores a duplicate request after another screen advanced the queue", async () => {
+  it("treats a duplicate request as an idempotent success after another screen advanced the queue", async () => {
     mocks.findPlayback.mockResolvedValue({
       id: "playback-1",
       currentAssetId: "asset-remix",
@@ -228,12 +275,42 @@ describe("playback transition target", () => {
 
     await expect(
       completePlaybackTransition("session-1", "asset-remix")
-    ).resolves.toBeNull();
+    ).resolves.toBe(true);
 
     expect(mocks.updateAsset).not.toHaveBeenCalled();
     expect(mocks.updatePlayback).not.toHaveBeenCalled();
     expect(mocks.updatePlaybackMany).not.toHaveBeenCalled();
     expect(mocks.promoteReadyAsset).not.toHaveBeenCalled();
     expect(mocks.recordAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it("promotes a ready asset directly when no show client is open", async () => {
+    mocks.findPlayback.mockResolvedValue({
+      id: "playback-1",
+      currentAssetId: "asset-live",
+      nextAssetId: "asset-rotation"
+    });
+    mocks.findAsset.mockResolvedValue({
+      id: "asset-ready",
+      sourceSubmissionId: null
+    });
+
+    await expect(
+      takePlaybackAsset("session-1", "asset-ready")
+    ).resolves.toBe(true);
+
+    expect(mocks.updatePlaybackMany).toHaveBeenCalledWith({
+      where: {
+        id: "playback-1",
+        currentAssetId: "asset-live",
+        nextAssetId: "asset-rotation"
+      },
+      data: {
+        currentAssetId: "asset-ready",
+        nextAssetId: null,
+        status: "live",
+        lastTransitionAt: expect.any(Date)
+      }
+    });
   });
 });
