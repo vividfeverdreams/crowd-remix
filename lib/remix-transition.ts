@@ -115,9 +115,14 @@ export function getAuthoritativePlaybackCandidate<
 >(
   currentAsset: Asset | null,
   activeAssetId: string | null | undefined,
-  queuedNextAssetId?: string | null
+  queuedNextAssetId?: string | null,
+  locallyAdvancedAssetId?: string | null
 ) {
-  if (activeAssetId && queuedNextAssetId === activeAssetId) {
+  if (
+    activeAssetId &&
+    queuedNextAssetId === activeAssetId &&
+    locallyAdvancedAssetId === activeAssetId
+  ) {
     return null;
   }
 

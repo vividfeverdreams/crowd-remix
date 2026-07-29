@@ -140,6 +140,7 @@ export function ShowScreen({
   const showUnmountedRef = useRef(false);
   const handledCueIdRef = useRef<string | null>(null);
   const handledManualTakeIdRef = useRef<string | null>(null);
+  const locallyAdvancedAssetIdRef = useRef<string | null>(null);
 
   const session = snapshot.session;
   const playback = session.playbackState;
@@ -174,7 +175,8 @@ export function ShowScreen({
   const authoritativeCurrentAsset = getAuthoritativePlaybackCandidate(
     currentAsset,
     activeAssetId,
-    nextAsset?.id
+    nextAsset?.id,
+    locallyAdvancedAssetIdRef.current
   );
   const authoritativeNextAsset =
     currentAsset?.id === activeAssetId &&
@@ -204,6 +206,15 @@ export function ShowScreen({
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
   }, [session.userId]);
+
+  useEffect(() => {
+    if (
+      locallyAdvancedAssetIdRef.current &&
+      currentAsset?.id === activeAssetId
+    ) {
+      locallyAdvancedAssetIdRef.current = null;
+    }
+  }, [activeAssetId, currentAsset?.id]);
 
   useAudioReactiveVisualEffect({
     active: audioSync.connected,
@@ -606,6 +617,9 @@ export function ShowScreen({
           standbyTransitionRef.current = null;
           standbyReadyAssetIdRef.current = null;
           authorizedBoundaryAssetIdRef.current = null;
+          if (playbackMutationsEnabled) {
+            locallyAdvancedAssetIdRef.current = transition.assetId;
+          }
           setStandbyReadyAssetId(null);
           setAuthorizedBoundaryAssetId(null);
           setActiveVideoSlot(transition.videoSlot);
@@ -633,7 +647,8 @@ export function ShowScreen({
       authoritativeCurrentAsset?.id,
       commitPlaybackTransition,
       getVideoElement,
-      isMonitor
+      isMonitor,
+      playbackMutationsEnabled
     ]
   );
 

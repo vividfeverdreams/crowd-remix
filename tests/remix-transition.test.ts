@@ -285,9 +285,25 @@ describe("remix transition cues", () => {
           id: "asset-outgoing"
         },
         "asset-incoming",
+        "asset-incoming",
         "asset-incoming"
       )
     ).toBeNull();
+  });
+
+  it("does not suppress a server current change just because the old visible asset rotated into next", () => {
+    const authoritativeAsset = {
+      id: "asset-server-current"
+    };
+
+    expect(
+      getAuthoritativePlaybackCandidate(
+        authoritativeAsset,
+        "asset-old-visible",
+        "asset-old-visible",
+        null
+      )
+    ).toBe(authoritativeAsset);
   });
 
   it.each([
