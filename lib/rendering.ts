@@ -136,6 +136,30 @@ export function isVideoModerationFailureReason(
   );
 }
 
+function getGeminiRecoveryTimeoutMs(renderJob: {
+  mode?: string | null;
+  providerStrategy?: string | null;
+}) {
+  return renderJob.mode === "remix" &&
+    renderJob.providerStrategy !== "stateful_edit"
+    ? 2 * 60 * 1_000
+    : staleGeminiRenderMs;
+}
+
+function isRetryableGeminiReconciliationError(error: unknown) {
+  if (isVideoModerationError(error)) {
+    return false;
+  }
+
+  if (error instanceof GeminiVideoApiError) {
+    return error.status !== 401 && error.status !== 403;
+  }
+
+  // Fetch/network/stream failures do not prove that a background interaction
+  // failed. Keep polling until the bounded recovery window expires.
+  return error instanceof Error;
+}
+
 export async function startVideoRender(input: StartRenderInput): Promise<StartedRender> {
   if (!input.geminiApiKey) {
     return {
@@ -157,7 +181,10 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
 
   const requestBody: Record<string, unknown> = {
     model: env.geminiVideoModel,
-    background: false,
+    // Video creation is a long-running interaction. Asking Gemini to run it in
+    // the background makes this request return the interaction ID promptly so
+    // our reconciler never mistakes a still-starting request for a failed one.
+    background: true,
     store: true,
     stream: false,
     response_format: {
@@ -296,7 +323,8 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
     input.geminiApiKey,
     {
       method: "POST",
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(45_000)
     }
   );
 
@@ -350,16 +378,42 @@ export async function reconcileRenderJob(renderJobId: string) {
     return null;
   }
 
+  if (renderJob.status === "completed") {
+    return {
+      status: "completed" as const,
+      progress: 100
+    };
+  }
+
+  if (renderJob.status === "failed") {
+    return {
+      status: "failed" as const,
+      progress: null
+    };
+  }
+
   const apiKey = renderJob.session?.userId
     ? await getEffectiveGeminiApiKeyForUser(String(renderJob.session.userId))
     : null;
 
   if (!apiKey) {
-    await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
+    const completed = await markRenderJobReady(
+      renderJob.id,
+      renderJob.outputAsset.id,
+      {
       publicUrl: getDemoLoopUrl(),
       storagePath: null,
       sourceVideoId: renderJob.providerRequestId ?? `demo_${renderJob.id}`
-    });
+      }
+    );
+
+    if (!completed) {
+      return {
+        status: "in_progress" as const,
+        progress: null
+      };
+    }
+
     return {
       status: "completed" as const,
       progress: 100
@@ -372,9 +426,9 @@ export async function reconcileRenderJob(renderJobId: string) {
         ? Date.now() - renderJob.createdAt.getTime()
         : 0;
 
-    // The interaction request is synchronous, so the render job can be visible
-    // to the dashboard before startVideoRender has returned and stored its ID.
-    // Give that request time to finish instead of racing reconciliation against it.
+    // The job can be visible to the dashboard during the short gap between
+    // creating the background interaction and storing its ID. Give that claim
+    // time to finish instead of racing reconciliation against it.
     if (renderAgeMs < staleGeminiRenderMs) {
       return {
         status: "queued" as const,
@@ -382,11 +436,15 @@ export async function reconcileRenderJob(renderJobId: string) {
       };
     }
 
-    await failRenderJob(renderJob.id, "Render job never received a Gemini interaction ID.");
+    const failureResult = await failRenderJob(
+      renderJob.id,
+      "Render job never received a Gemini interaction ID."
+    );
+    const failed = Boolean(failureResult && failureResult.failed);
 
     return {
-      status: "failed" as const,
-      progress: 0
+      status: failed ? ("failed" as const) : ("in_progress" as const),
+      progress: failed ? 0 : null
     };
   }
 
@@ -435,6 +493,44 @@ export async function reconcileRenderJob(renderJobId: string) {
         ? error.message
         : "Gemini Omni could not return this render.";
     const moderationBlocked = isVideoModerationError(error);
+    const retryable = isRetryableGeminiReconciliationError(error);
+    const renderAgeMs =
+      renderJob.createdAt instanceof Date
+        ? Date.now() - renderJob.createdAt.getTime()
+        : 0;
+
+    if (
+      !moderationBlocked &&
+      retryable &&
+      renderAgeMs < getGeminiRecoveryTimeoutMs(renderJob)
+    ) {
+      console.warn("[render-job] transient Gemini reconciliation failure", {
+        sessionId: renderJob.sessionId,
+        renderJobId: renderJob.id,
+        providerStatus:
+          error instanceof GeminiVideoApiError ? error.status : null,
+        providerCode:
+          error instanceof GeminiVideoApiError ? error.code : null,
+        failureReason
+      });
+      await db.renderJob.updateMany({
+        where: {
+          id: renderJob.id,
+          status: {
+            in: ["queued", "in_progress"]
+          }
+        },
+        data: {
+          status: "in_progress",
+          lastPolledAt: new Date()
+        }
+      });
+
+      return {
+        status: "in_progress" as const,
+        progress: null
+      };
+    }
 
     console.error("[render-job] Gemini reconciliation failed", {
       sessionId: renderJob.sessionId,
@@ -446,7 +542,7 @@ export async function reconcileRenderJob(renderJobId: string) {
       failureReason
     });
 
-    await failRenderJob(
+    const failureResult = await failRenderJob(
       renderJob.id,
       moderationBlocked
         ? formatVideoModerationFailureReason(failureReason)
@@ -455,19 +551,16 @@ export async function reconcileRenderJob(renderJobId: string) {
         moderationBlocked
       }
     );
+    const failed = Boolean(failureResult && failureResult.failed);
 
     return {
-      status: "failed" as const,
+      status: failed ? ("failed" as const) : ("in_progress" as const),
       progress: null
     };
   }
 
   if (!interaction) {
-    const staleAfterMs =
-      renderJob.mode === "remix" &&
-      renderJob.providerStrategy !== "stateful_edit"
-        ? 2 * 60 * 1_000
-        : staleGeminiRenderMs;
+    const staleAfterMs = getGeminiRecoveryTimeoutMs(renderJob);
 
     if (
       renderJob.createdAt instanceof Date &&
@@ -483,25 +576,32 @@ export async function reconcileRenderJob(renderJobId: string) {
         ageMs: Date.now() - renderJob.createdAt.getTime()
       });
 
-      await failRenderJob(renderJob.id, failureReason, {
+      const failureResult = await failRenderJob(renderJob.id, failureReason, {
         forceRetry: renderJob.providerStrategy !== "stateful_edit"
       });
-      await recordAuditEvent({
-        type: "render.recovery_timeout",
-        summary: "Retired a stalled Gemini Omni render so the queue could retry",
-        details: renderJob.providerRequestId,
-        sessionId: renderJob.sessionId
-      });
+      const failed = Boolean(failureResult && failureResult.failed);
+
+      if (failureResult && failureResult.changed) {
+        await recordAuditEvent({
+          type: "render.recovery_timeout",
+          summary: "Retired a stalled Gemini Omni render so the queue could retry",
+          details: renderJob.providerRequestId,
+          sessionId: renderJob.sessionId
+        });
+      }
 
       return {
-        status: "failed" as const,
+        status: failed ? ("failed" as const) : ("in_progress" as const),
         progress: null
       };
     }
 
-    await db.renderJob.update({
+    await db.renderJob.updateMany({
       where: {
-        id: renderJob.id
+        id: renderJob.id,
+        status: {
+          in: ["queued", "in_progress"]
+        }
       },
       data: {
         status: "in_progress",
@@ -521,11 +621,18 @@ export async function reconcileRenderJob(renderJobId: string) {
     const buffer = await resolveVideoBuffer(video, apiKey);
     const saved = await persistVideoAsset(renderJob.outputAsset.id, buffer);
 
-    await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
+    const completed = await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
       publicUrl: saved.publicUrl,
       storagePath: saved.storagePath,
       sourceVideoId: interaction.id ?? renderJob.providerRequestId
     });
+
+    if (!completed) {
+      return {
+        status: "in_progress" as const,
+        progress: null
+      };
+    }
 
     return {
       status: "completed" as const,
@@ -537,7 +644,7 @@ export async function reconcileRenderJob(renderJobId: string) {
     const providerError = getInteractionFailureMessage(interaction);
     const moderationBlocked = isVideoModerationFailure(null, providerError);
 
-    await failRenderJob(
+    const failureResult = await failRenderJob(
       renderJob.id,
       moderationBlocked
         ? formatVideoModerationFailureReason(providerError)
@@ -546,9 +653,10 @@ export async function reconcileRenderJob(renderJobId: string) {
         moderationBlocked
       }
     );
+    const failed = Boolean(failureResult && failureResult.failed);
 
     return {
-      status: "failed" as const,
+      status: failed ? ("failed" as const) : ("in_progress" as const),
       progress: null
     };
   }
@@ -566,7 +674,7 @@ export async function reconcileRenderJob(renderJobId: string) {
       providerError
     );
 
-    await failRenderJob(
+    const failureResult = await failRenderJob(
       renderJob.id,
       moderationBlocked
         ? formatVideoModerationFailureReason(providerError)
@@ -576,18 +684,22 @@ export async function reconcileRenderJob(renderJobId: string) {
         moderationBlocked
       }
     );
+    const failed = Boolean(failureResult && failureResult.failed);
 
     return {
-      status: "failed" as const,
+      status: failed ? ("failed" as const) : ("in_progress" as const),
       progress: null
     };
   }
 
   const mappedStatus = interaction.status === "queued" ? "queued" : "in_progress";
 
-  await db.renderJob.update({
+  await db.renderJob.updateMany({
     where: {
-      id: renderJob.id
+      id: renderJob.id,
+      status: {
+        in: ["queued", "in_progress"]
+      }
     },
     data: {
       status: mappedStatus,
@@ -632,9 +744,10 @@ export async function failRenderJob(
     return false;
   }
 
-  if (renderJob.status === "failed") {
+  if (renderJob.status === "failed" || renderJob.status === "completed") {
     return {
-      failed: true,
+      failed: renderJob.status === "failed",
+      changed: false,
       moderationBlockCount: 0,
       banned: false
     };
@@ -658,10 +771,13 @@ export async function failRenderJob(
     Boolean(renderJob.submissionId) &&
     previousFailureCount >= 1;
 
-  await db.$transaction(async (tx: any) => {
-    await tx.renderJob.update({
+  const failureClaimed = await db.$transaction(async (tx: any) => {
+    const failureClaim = await tx.renderJob.updateMany({
       where: {
-        id: renderJob.id
+        id: renderJob.id,
+        status: {
+          in: ["queued", "in_progress"]
+        }
       },
       data: {
         status: "failed",
@@ -669,6 +785,10 @@ export async function failRenderJob(
         lastPolledAt: new Date()
       }
     });
+
+    if (failureClaim.count !== 1) {
+      return false;
+    }
 
     if (renderJob.outputAssetId) {
       await tx.visualAsset.update({
@@ -701,7 +821,18 @@ export async function failRenderJob(
         }
       });
     }
+
+    return true;
   });
+
+  if (!failureClaimed) {
+    return {
+      failed: false,
+      changed: false,
+      moderationBlockCount: 0,
+      banned: false
+    };
+  }
 
   let moderationBlockCount = 0;
 
@@ -734,6 +865,7 @@ export async function failRenderJob(
 
   return {
     failed: true,
+    changed: true,
     moderationBlockCount,
     banned: isParticipantBanned(moderationBlockCount)
   };
@@ -765,9 +897,12 @@ export async function completeGeminiVideoRender(
     return renderJob.status;
   }
 
-  await db.renderJob.update({
+  const progressClaim = await db.renderJob.updateMany({
     where: {
-      id: renderJob.id
+      id: renderJob.id,
+      status: {
+        in: ["queued", "in_progress"]
+      }
     },
     data: {
       providerOutputUri: outputUri,
@@ -775,6 +910,10 @@ export async function completeGeminiVideoRender(
       lastPolledAt: new Date()
     }
   });
+
+  if (progressClaim.count !== 1) {
+    return "in_progress" as const;
+  }
 
   const apiKey = renderJob.session?.userId
     ? await getEffectiveGeminiApiKeyForUser(String(renderJob.session.userId))
@@ -792,13 +931,13 @@ export async function completeGeminiVideoRender(
 
   const saved = await persistVideoAsset(renderJob.outputAsset.id, buffer);
 
-  await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
+  const completed = await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
     publicUrl: saved.publicUrl,
     storagePath: saved.storagePath,
     sourceVideoId: providerRequestId
   });
 
-  return "completed" as const;
+  return completed ? ("completed" as const) : ("in_progress" as const);
 }
 
 export async function failGeminiVideoRender(
@@ -819,8 +958,9 @@ export async function failGeminiVideoRender(
     return false;
   }
 
-  await failRenderJob(renderJob.id, failureReason);
-  return true;
+  const failureResult = await failRenderJob(renderJob.id, failureReason);
+
+  return Boolean(failureResult && failureResult.failed);
 }
 
 async function markRenderJobReady(
@@ -848,11 +988,35 @@ async function markRenderJobReady(
 
   const playbackState = renderJob?.session.playbackState;
 
-  if (!renderJob || !playbackState) {
-    return;
+  if (
+    !renderJob ||
+    !playbackState ||
+    renderJob.status === "completed" ||
+    renderJob.status === "failed"
+  ) {
+    return false;
   }
 
   const placement = await db.$transaction(async (tx: any) => {
+    const completionClaim = await tx.renderJob.updateMany({
+      where: {
+        id: renderJobId,
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "completed",
+        failureReason: null,
+        completedAt: new Date(),
+        lastPolledAt: new Date()
+      }
+    });
+
+    if (completionClaim.count !== 1) {
+      return null;
+    }
+
     await tx.visualAsset.update({
       where: {
         id: assetId
@@ -862,18 +1026,6 @@ async function markRenderJobReady(
         publicUrl: input.publicUrl,
         storagePath: input.storagePath,
         sourceVideoId: input.sourceVideoId
-      }
-    });
-
-    await tx.renderJob.update({
-      where: {
-        id: renderJobId
-      },
-      data: {
-        status: "completed",
-        failureReason: null,
-        completedAt: new Date(),
-        lastPolledAt: new Date()
       }
     });
 
@@ -922,12 +1074,18 @@ async function markRenderJobReady(
     return placement;
   });
 
+  if (!placement) {
+    return false;
+  }
+
   console.info("[render-job] completed and placed asset", {
     sessionId: renderJob.sessionId,
     renderJobId,
     assetId,
     placement
   });
+
+  return true;
 }
 
 async function callGeminiVideoApi<T>(url: string, apiKey: string, init?: RequestInit) {

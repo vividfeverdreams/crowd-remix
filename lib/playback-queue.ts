@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { getNextPlaybackRotationAsset } from "@/lib/remix-transition";
 
 export const playbackRotationSize = 5;
 
@@ -16,10 +17,14 @@ type PlaybackQueueClient = {
   visualAsset: {
     findFirst: (args: any) => Promise<{
       id: string;
+      kind?: string;
+      status?: string;
       createdAt?: Date;
     } | null>;
     findMany: (args: any) => Promise<Array<{
       id: string;
+      kind: string;
+      status: string;
       createdAt: Date;
     }>>;
   };
@@ -77,6 +82,8 @@ export async function promoteOldestReadyAsset(
       },
       select: {
         id: true,
+        kind: true,
+        status: true,
         createdAt: true
       }
     });
@@ -106,31 +113,27 @@ export async function promoteOldestReadyAsset(
           id: "desc"
         }
       ],
-      take: playbackRotationSize - 1,
+      take: playbackRotationSize,
       select: {
         id: true,
+        kind: true,
+        status: true,
         createdAt: true
       }
     });
 
-    const rotation = [
-      {
-        id: playback.currentAssetId,
-        createdAt: currentAsset.createdAt
-      },
-      ...rotationPeers
-    ].sort(
-      (left, right) =>
-        left.createdAt.getTime() - right.createdAt.getTime() ||
-        left.id.localeCompare(right.id)
+    candidate = getNextPlaybackRotationAsset(
+      [
+        {
+          id: currentAsset.id,
+          kind: currentAsset.kind ?? undefined,
+          createdAt: currentAsset.createdAt
+        },
+        ...rotationPeers
+      ],
+      playback.currentAssetId,
+      playbackRotationSize
     );
-
-    if (rotation.length > 1) {
-      const currentIndex = rotation.findIndex(
-        (asset) => asset.id === playback.currentAssetId
-      );
-      candidate = rotation[(currentIndex + 1) % rotation.length] ?? null;
-    }
   }
 
   if (!candidate) {

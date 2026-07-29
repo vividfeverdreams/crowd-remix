@@ -71,6 +71,87 @@ describe("five-video playback rotation", () => {
     });
   });
 
+  it("introduces fresh remix five immediately after the original, before rotating remix one through five", async () => {
+    client.playbackState.findUnique
+      .mockResolvedValueOnce({
+        id: "playback-1",
+        currentAssetId: "original",
+        nextAssetId: null
+      })
+      .mockResolvedValueOnce({
+        id: "playback-1",
+        currentAssetId: "remix-5",
+        nextAssetId: null
+      });
+    client.visualAsset.findFirst
+      .mockResolvedValueOnce({
+        id: "remix-5"
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "remix-5",
+        kind: "remix",
+        status: "live",
+        createdAt: new Date("2026-07-28T12:05:00.000Z")
+      });
+    client.visualAsset.findMany.mockResolvedValue([
+      {
+        id: "remix-4",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:04:00.000Z")
+      },
+      {
+        id: "remix-3",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:03:00.000Z")
+      },
+      {
+        id: "remix-2",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:02:00.000Z")
+      },
+      {
+        id: "remix-1",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:01:00.000Z")
+      },
+      {
+        id: "original",
+        kind: "seed",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:00:00.000Z")
+      }
+    ]);
+    client.playbackState.updateMany.mockResolvedValue({
+      count: 1
+    });
+
+    await expect(
+      promoteOldestReadyAsset("session-1", client)
+    ).resolves.toBe("remix-5");
+
+    expect(client.visualAsset.findMany).not.toHaveBeenCalled();
+    expect(client.playbackState.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "playback-1",
+        currentAssetId: "original",
+        nextAssetId: null
+      },
+      data: {
+        nextAssetId: "remix-5",
+        status: "live"
+      }
+    });
+
+    await expect(
+      promoteOldestReadyAsset("session-1", client)
+    ).resolves.toBe("remix-1");
+  });
+
   it("cycles deterministically to the chronological successor within the latest five playable assets", async () => {
     client.playbackState.findUnique.mockResolvedValue({
       id: "playback-1",
@@ -130,9 +211,11 @@ describe("five-video playback rotation", () => {
           id: "desc"
         }
       ],
-      take: playbackRotationSize - 1,
+      take: playbackRotationSize,
       select: {
         id: true,
+        kind: true,
+        status: true,
         createdAt: true
       }
     });
@@ -149,7 +232,7 @@ describe("five-video playback rotation", () => {
     });
   });
 
-  it("queries only four newest peers so an older sixth asset stays outside the ring", async () => {
+  it("queries five bounded peers so an evicted current asset can enter the newest window", async () => {
     client.playbackState.findUnique.mockResolvedValue({
       id: "playback-1",
       currentAssetId: "asset-6",
@@ -177,6 +260,10 @@ describe("five-video playback rotation", () => {
       {
         id: "asset-2",
         createdAt: new Date("2026-07-28T12:02:00.000Z")
+      },
+      {
+        id: "asset-1",
+        createdAt: new Date("2026-07-28T12:01:00.000Z")
       }
     ]);
     client.playbackState.updateMany.mockResolvedValue({
@@ -188,7 +275,7 @@ describe("five-video playback rotation", () => {
     ).resolves.toBe("asset-2");
 
     const rotationQuery = client.visualAsset.findMany.mock.calls[0]?.[0];
-    expect(rotationQuery.take).toBe(4);
+    expect(rotationQuery.take).toBe(playbackRotationSize);
     expect(rotationQuery.orderBy).toEqual([
       {
         createdAt: "desc"
@@ -200,6 +287,73 @@ describe("five-video playback rotation", () => {
     expect(rotationQuery.where.id).toEqual({
       not: "asset-6"
     });
+  });
+
+  it("introduces remix six, then wraps to remix two after remix one is evicted", async () => {
+    client.playbackState.findUnique
+      .mockResolvedValueOnce({
+        id: "playback-1",
+        currentAssetId: "remix-5",
+        nextAssetId: null
+      })
+      .mockResolvedValueOnce({
+        id: "playback-1",
+        currentAssetId: "remix-6",
+        nextAssetId: null
+      });
+    client.visualAsset.findFirst
+      .mockResolvedValueOnce({
+        id: "remix-6"
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "remix-6",
+        kind: "remix",
+        status: "live",
+        createdAt: new Date("2026-07-28T12:06:00.000Z")
+      });
+    client.visualAsset.findMany.mockResolvedValue([
+      {
+        id: "remix-5",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:05:00.000Z")
+      },
+      {
+        id: "remix-4",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:04:00.000Z")
+      },
+      {
+        id: "remix-3",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:03:00.000Z")
+      },
+      {
+        id: "remix-2",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:02:00.000Z")
+      },
+      {
+        id: "remix-1",
+        kind: "remix",
+        status: "archived",
+        createdAt: new Date("2026-07-28T12:01:00.000Z")
+      }
+    ]);
+    client.playbackState.updateMany.mockResolvedValue({
+      count: 1
+    });
+
+    await expect(
+      promoteOldestReadyAsset("session-1", client)
+    ).resolves.toBe("remix-6");
+    await expect(
+      promoteOldestReadyAsset("session-1", client)
+    ).resolves.toBe("remix-2");
   });
 
   it("wraps from the newest current asset to the oldest peer in a two-video ring", async () => {

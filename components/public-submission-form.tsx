@@ -8,6 +8,14 @@ import {
   useRef,
   useState
 } from "react";
+import {
+  formatChoiceTemplateStatement,
+  getPublicRemixPromptTemplate,
+  pickRandomChoiceResponses,
+  pickRandomPublicRemixPromptTemplate,
+  resolvePublicRemixPromptSelection,
+  type PublicRemixChoiceResponse
+} from "@/lib/public-remix-prompts";
 
 type PublicSubmissionFormProps = {
   sessionCode: string;
@@ -61,7 +69,13 @@ export function PublicSubmissionForm({
   disabled = false,
   disabledMessage = null
 }: PublicSubmissionFormProps) {
-  const [prompt, setPrompt] = useState("");
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
+  const [visibleChoiceResponses, setVisibleChoiceResponses] = useState<
+    readonly PublicRemixChoiceResponse[]
+  >([]);
+  const [selectedResponseId, setSelectedResponseId] = useState<string | null>(
+    null
+  );
   const [nickname, setNickname] = useState("");
   const [participantToken, setParticipantToken] = useState("");
   const [identityReady, setIdentityReady] = useState(false);
@@ -74,9 +88,38 @@ export function PublicSubmissionForm({
   const [preparingImage, setPreparingImage] = useState(false);
   const [trackedSubmissionId, setTrackedSubmissionId] = useState<string | null>(null);
   const [trackedStatus, setTrackedStatus] = useState<TrackedSubmissionStatus | null>(null);
+  const [shuffleAnnouncement, setShuffleAnnouncement] = useState({
+    revision: 0,
+    message: ""
+  });
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imagePreviewUrlRef = useRef<string | null>(null);
   const participantBanned = trackedStatus?.state === "banned";
+  const activeTemplate = activeTemplateId
+    ? getPublicRemixPromptTemplate(activeTemplateId)
+    : null;
+  const selectedPrompt = (() => {
+    if (!activeTemplate) {
+      return "";
+    }
+
+    if (activeTemplate.kind === "image") {
+      return activeTemplate.statement;
+    }
+
+    if (!selectedResponseId) {
+      return "";
+    }
+
+    try {
+      return resolvePublicRemixPromptSelection(
+        activeTemplate.id,
+        selectedResponseId
+      ).prompt;
+    } catch {
+      return "";
+    }
+  })();
 
   useEffect(() => {
     const savedNickname = readParticipantStorage(participantNicknameStorageKey)?.trim() ?? "";
@@ -87,6 +130,10 @@ export function PublicSubmissionForm({
     setParticipantToken(deviceToken);
     setNickname(savedNickname);
     setIdentityReady(true);
+  }, []);
+
+  useEffect(() => {
+    showRandomTemplate(null);
   }, []);
 
   useEffect(() => {
@@ -110,6 +157,55 @@ export function PublicSubmissionForm({
       window.clearInterval(interval);
     };
   }, [trackedSubmissionId, trackedStatus]);
+
+  function showRandomTemplate(currentTemplateId: string | null) {
+    const nextTemplate =
+      pickRandomPublicRemixPromptTemplate(currentTemplateId);
+
+    if (!nextTemplate) {
+      return;
+    }
+
+    setActiveTemplateId(nextTemplate.id);
+    setSelectedResponseId(null);
+    setVisibleChoiceResponses(
+      nextTemplate.kind === "choice"
+        ? pickRandomChoiceResponses(nextTemplate)
+        : []
+    );
+    replaceReferenceImage(null);
+    setMessage(null);
+
+    if (currentTemplateId) {
+      const announcement =
+        nextTemplate.kind === "choice"
+          ? "A new fill-in-the-blank statement and four answers are ready."
+          : "A new image remix statement is ready.";
+      setShuffleAnnouncement((current) => ({
+        revision: current.revision + 1,
+        message: announcement
+      }));
+    }
+  }
+
+  function shuffleChoiceResponses() {
+    if (activeTemplate?.kind !== "choice") {
+      return;
+    }
+
+    const nextResponses = pickRandomChoiceResponses(
+      activeTemplate,
+      visibleChoiceResponses.map((response) => response.id)
+    );
+
+    setVisibleChoiceResponses(nextResponses);
+    setSelectedResponseId(null);
+    setMessage(null);
+    setShuffleAnnouncement((current) => ({
+      revision: current.revision + 1,
+      message: "Four new remix answers are ready."
+    }));
+  }
 
   async function handleReferenceImageChange(
     event: ChangeEvent<HTMLInputElement>
@@ -189,6 +285,28 @@ export function PublicSubmissionForm({
       return;
     }
 
+    if (!activeTemplate) {
+      setMessage("Choose a remix statement before sending.");
+      return;
+    }
+
+    if (activeTemplate.kind === "choice" && !selectedResponseId) {
+      setMessage("Choose one of the four remix answers.");
+      return;
+    }
+
+    if (activeTemplate.kind === "image" && !referenceImage) {
+      setMessage("Choose an image for this remix statement.");
+      return;
+    }
+
+    if (!selectedPrompt) {
+      setMessage("Choose a complete remix idea before sending.");
+      return;
+    }
+
+    const submittedTemplateId = activeTemplate.id;
+    const submittedPrompt = selectedPrompt;
     const activeParticipantToken =
       participantToken || createParticipantDeviceToken();
 
@@ -202,7 +320,12 @@ export function PublicSubmissionForm({
 
     try {
       const formData = new FormData();
-      formData.set("prompt", prompt);
+      formData.set("templateId", submittedTemplateId);
+
+      if (activeTemplate.kind === "choice" && selectedResponseId) {
+        formData.set("responseId", selectedResponseId);
+      }
+
       formData.set("senderLabel", submittedNickname);
       formData.set("participantToken", activeParticipantToken);
 
@@ -222,24 +345,32 @@ export function PublicSubmissionForm({
             status?: string;
             submissionId?: string;
             moderationBlockCount?: number;
+            prompt?: string;
           }
         | null;
 
       if (!response.ok) {
         if (payload?.status === "banned") {
-          setTrackedStatus(createBannedTrackedStatus(prompt, payload));
+          setTrackedStatus(
+            createBannedTrackedStatus(
+              payload.prompt ?? submittedPrompt,
+              payload
+            )
+          );
         }
 
         setMessage(payload?.error ?? payload?.message ?? "Could not submit that remix.");
         return;
       }
 
-      setPrompt("");
-      replaceReferenceImage(null);
-
       if (payload?.submissionId) {
         setTrackedSubmissionId(payload.submissionId);
-        await refreshTrackedStatus(payload.submissionId, payload);
+        showRandomTemplate(submittedTemplateId);
+        await refreshTrackedStatus(
+          payload.submissionId,
+          payload,
+          payload.prompt ?? submittedPrompt
+        );
       } else {
         setMessage(payload?.message ?? "Your remix is in the mix.");
       }
@@ -255,7 +386,8 @@ export function PublicSubmissionForm({
     fallback?: {
       message?: string;
       status?: string;
-    } | null
+    } | null,
+    fallbackPrompt = ""
   ) {
     try {
       const response = await fetch(`/api/r/${sessionCode}?submissionId=${encodeURIComponent(submissionId)}`);
@@ -269,7 +401,9 @@ export function PublicSubmissionForm({
       setMessage(null);
     } catch {
       if (fallback) {
-        setTrackedStatus(createFallbackTrackedStatus(prompt, fallback));
+        setTrackedStatus(
+          createFallbackTrackedStatus(fallbackPrompt, fallback)
+        );
         setMessage(fallback.message ?? "Your remix is in the mix.");
         return;
       }
@@ -282,9 +416,13 @@ export function PublicSubmissionForm({
     <div>
       <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-white/45">Shape the next visual</p>
       <p className="mt-3 text-sm leading-7 text-white/68">
-        Describe anything you want to see change—colors, mood, setting, movement, texture, or a completely new visual idea.
+        Roll a new statement, then choose one of its answers or add the image it asks for.
       </p>
-      <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+      <form
+        onSubmit={handleSubmit}
+        className="mt-5 space-y-4"
+        aria-busy={submitting || preparingImage}
+      >
         <label className="block">
           <span className="mb-2 block text-base font-medium text-white/88">Your Nickname</span>
           <input
@@ -308,76 +446,192 @@ export function PublicSubmissionForm({
           />
         </label>
 
-        <label className="block">
-          <span className="mb-2 block text-base font-medium text-white/88">How would you like to change the visuals?</span>
-          <textarea
-            required
-            maxLength={600}
-            rows={6}
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            disabled={disabled || participantBanned}
-            className="w-full rounded-3xl border border-white/10 bg-black/30 px-4 py-3 outline-none transition focus:border-plasma"
-            placeholder="Try anything—change the colors, add a new setting, shift the mood, slow down the movement, or describe a visual you want to see."
-          />
-          <span className="mt-2 block text-right font-mono text-[11px] text-white/30">{prompt.length} / 600</span>
-        </label>
-
-        <div>
-          <label className="block">
-            <span className="mb-2 block text-base font-medium text-white/88">
-              Reference photo <span className="text-white/40">(optional)</span>
-            </span>
-            <span className="block cursor-pointer rounded-3xl border border-dashed border-white/15 bg-white/[0.03] px-4 py-4 transition hover:border-plasma/45 hover:bg-plasma/[0.05]">
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-                disabled={
-                  disabled ||
-                  participantBanned ||
-                  submitting ||
-                  preparingImage
-                }
-                onChange={handleReferenceImageChange}
-                className="sr-only"
-              />
-              <span className="block text-sm font-semibold text-white/82">
-                Choose from photos or files
+        <section
+          className="rounded-[2rem] border border-white/10 bg-black/20 p-4 sm:p-5"
+          aria-labelledby="remix-statement-heading"
+        >
+          <div className="flex items-center justify-between gap-4">
+            <p
+              id="remix-statement-heading"
+              className="font-mono text-[11px] uppercase tracking-[0.26em] text-white/50"
+            >
+              Your remix statement
+            </p>
+            <button
+              type="button"
+              onClick={() => showRandomTemplate(activeTemplateId)}
+              disabled={
+                disabled ||
+                participantBanned ||
+                submitting ||
+                preparingImage ||
+                !activeTemplate
+              }
+              aria-label="Shuffle to a different remix statement"
+              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-white/75 outline-none transition hover:border-plasma/45 hover:bg-plasma/[0.08] focus-visible:ring-2 focus-visible:ring-plasma disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span aria-hidden="true" className="text-lg leading-none">
+                ⚄
               </span>
-              <span className="mt-1 block text-xs leading-5 text-white/48">
-                JPEG, PNG, WebP, or HEIC. Large camera photos are optimized automatically. Approved photos may appear on the live screen and guide the Omni remix.
-              </span>
-            </span>
-          </label>
+              New statement
+            </button>
+          </div>
 
-          {referenceImage && referenceImagePreviewUrl ? (
-            <div className="mt-3 overflow-hidden rounded-3xl border border-white/10 bg-black/30">
-              <div className="relative aspect-[4/3] w-full">
-                <Image
-                  src={referenceImagePreviewUrl}
-                  alt="Selected remix reference"
-                  fill
-                  unoptimized
-                  sizes="(max-width: 768px) 100vw, 640px"
-                  className="object-cover"
-                />
-              </div>
-              <div className="flex items-center justify-between gap-4 px-4 py-3">
-                <p className="min-w-0 truncate text-xs text-white/58">
-                  {referenceImage.name}
+          {!activeTemplate ? (
+            <p className="mt-5 text-sm text-white/55" role="status">
+              Rolling a remix statement…
+            </p>
+          ) : activeTemplate.kind === "choice" ? (
+            <div className="mt-5">
+              <p
+                id="active-remix-statement"
+                className="text-xl font-semibold leading-8 text-white sm:text-2xl"
+              >
+                <span className="sr-only">
+                  {formatChoiceTemplateStatement(activeTemplate, "blank")}
+                </span>
+                <span aria-hidden="true">
+                  {activeTemplate.beforeBlank}
+                  <span className="mx-1 inline-block min-w-24 border-b-2 border-plasma px-2 text-center text-plasma">
+                    _____
+                  </span>
+                  {activeTemplate.afterBlank}
+                </span>
+              </p>
+
+              <div className="mt-6 flex items-center justify-between gap-4">
+                <p
+                  id="remix-answer-heading"
+                  className="text-sm font-medium text-white/75"
+                >
+                  Choose one answer
                 </p>
                 <button
                   type="button"
-                  onClick={() => replaceReferenceImage(null)}
-                  className="shrink-0 rounded-full border border-white/10 px-3 py-1 text-xs text-white/70 transition hover:bg-white/10"
+                  onClick={shuffleChoiceResponses}
+                  disabled={
+                    disabled ||
+                    participantBanned ||
+                    submitting ||
+                    preparingImage
+                  }
+                  aria-label="Shuffle the four answer choices"
+                  className="inline-flex min-h-11 items-center gap-2 rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-white/75 outline-none transition hover:border-plasma/45 hover:bg-plasma/[0.08] focus-visible:ring-2 focus-visible:ring-plasma disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Remove
+                  <span aria-hidden="true" className="text-lg leading-none">
+                    ⚄
+                  </span>
+                  New answers
                 </button>
               </div>
+
+              <div
+                className="mt-3 grid gap-3 sm:grid-cols-2"
+                role="group"
+                aria-labelledby="active-remix-statement remix-answer-heading"
+              >
+                {visibleChoiceResponses.map((response) => {
+                  const selected = selectedResponseId === response.id;
+
+                  return (
+                    <button
+                      key={response.id}
+                      type="button"
+                      aria-pressed={selected}
+                      disabled={
+                        disabled ||
+                        participantBanned ||
+                        submitting ||
+                        preparingImage
+                      }
+                      onClick={() => {
+                        setSelectedResponseId(response.id);
+                        setMessage(null);
+                      }}
+                      className={`min-h-14 rounded-2xl border px-4 py-3 text-left text-sm font-medium leading-6 outline-none transition focus-visible:ring-2 focus-visible:ring-plasma disabled:cursor-not-allowed disabled:opacity-55 ${
+                        selected
+                          ? "border-plasma bg-plasma/15 text-white shadow-[0_0_0_1px_rgba(172,255,47,0.18)]"
+                          : "border-white/10 bg-white/[0.035] text-white/75 hover:border-white/25 hover:bg-white/[0.07]"
+                      }`}
+                    >
+                      {response.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          ) : null}
-        </div>
+          ) : (
+            <div className="mt-5">
+              <p className="text-xl font-semibold leading-8 text-white sm:text-2xl">
+                {activeTemplate.statement}
+              </p>
+
+              <div className="mt-5">
+                <label className="block">
+                  <span className="mb-2 block text-base font-medium text-white/88">
+                    Image for this remix <span className="text-plasma">(required)</span>
+                  </span>
+                  <span className="block cursor-pointer rounded-3xl border border-dashed border-white/15 bg-white/[0.03] px-4 py-4 transition hover:border-plasma/45 hover:bg-plasma/[0.05]">
+                    <input
+                      ref={imageInputRef}
+                      required
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                      disabled={
+                        disabled ||
+                        participantBanned ||
+                        submitting ||
+                        preparingImage
+                      }
+                      onChange={handleReferenceImageChange}
+                      className="sr-only"
+                    />
+                    <span className="block text-sm font-semibold text-white/82">
+                      Choose from your camera roll or files
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-white/48">
+                      JPEG, PNG, WebP, or HEIC. Large camera photos are optimized automatically. Approved photos may appear on the live screen and guide the remix.
+                    </span>
+                  </span>
+                </label>
+
+                {referenceImage && referenceImagePreviewUrl ? (
+                  <div className="mt-3 overflow-hidden rounded-3xl border border-white/10 bg-black/30">
+                    <div className="relative aspect-[4/3] w-full">
+                      <Image
+                        src={referenceImagePreviewUrl}
+                        alt="Selected remix reference"
+                        fill
+                        unoptimized
+                        sizes="(max-width: 768px) 100vw, 640px"
+                        className="object-cover"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-4 px-4 py-3">
+                      <p className="min-w-0 truncate text-xs text-white/58">
+                        {referenceImage.name}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => replaceReferenceImage(null)}
+                        disabled={submitting || preparingImage}
+                        className="shrink-0 rounded-full border border-white/10 px-3 py-1 text-xs text-white/70 outline-none transition hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-plasma disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          <p className="sr-only" role="status" aria-live="polite">
+            <span key={shuffleAnnouncement.revision}>
+              {shuffleAnnouncement.message}
+            </span>
+          </p>
+        </section>
 
         <button
           type="submit"
@@ -386,7 +640,10 @@ export function PublicSubmissionForm({
             preparingImage ||
             disabled ||
             participantBanned ||
-            !identityReady
+            !identityReady ||
+            !activeTemplate ||
+            (activeTemplate.kind === "choice" && !selectedResponseId) ||
+            (activeTemplate.kind === "image" && !referenceImage)
           }
           className="w-full rounded-full bg-white px-6 py-3 text-sm font-semibold text-ink transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
@@ -401,7 +658,15 @@ export function PublicSubmissionForm({
                 : "Send Visual Idea"}
         </button>
 
-        {message ? <p className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/80">{message}</p> : null}
+        {message ? (
+          <p
+            className="rounded-3xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/80"
+            role="status"
+            aria-live="polite"
+          >
+            {message}
+          </p>
+        ) : null}
 
         {trackedStatus ? (
           <div className="rounded-4xl border border-white/10 bg-black/20 p-4">

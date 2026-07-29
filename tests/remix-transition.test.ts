@@ -2,17 +2,84 @@ import { describe, expect, it } from "vitest";
 import {
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
+  getChronologicalPlaybackRotation,
   getIntroducedPlaybackAssetIds,
+  getNextPlaybackRotationAsset,
   getPlaybackAttribution,
   getStandbyVideoSlot,
   isVideoSlotVisible,
   shouldAdvancePlaybackAtVideoEnd,
+  shouldHandoffPreparedPlaybackAtBoundary,
   shouldShowPlaybackIntroduction,
   shouldStartAutomaticPlaybackTransition,
   getTypewriterChunkSize
 } from "@/lib/remix-transition";
 
 describe("remix transition cues", () => {
+  const rotationAsset = (
+    id: string,
+    minute: number,
+    kind: "seed" | "remix" = "remix"
+  ) => ({
+    id,
+    kind,
+    createdAt: new Date(`2026-07-28T12:${String(minute).padStart(2, "0")}:00.000Z`)
+  });
+
+  it("keeps the original through remix four, then rolls the newest five remixes", () => {
+    const original = rotationAsset("original", 0, "seed");
+    const remixes = Array.from({ length: 6 }, (_, index) =>
+      rotationAsset(`remix-${index + 1}`, index + 1)
+    );
+
+    expect(
+      getChronologicalPlaybackRotation([original, ...remixes.slice(0, 4)]).map(
+        (asset) => asset.id
+      )
+    ).toEqual([
+      "original",
+      "remix-1",
+      "remix-2",
+      "remix-3",
+      "remix-4"
+    ]);
+    expect(
+      getChronologicalPlaybackRotation([original, ...remixes.slice(0, 5)]).map(
+        (asset) => asset.id
+      )
+    ).toEqual([
+      "remix-1",
+      "remix-2",
+      "remix-3",
+      "remix-4",
+      "remix-5"
+    ]);
+    expect(
+      getChronologicalPlaybackRotation([original, ...remixes]).map(
+        (asset) => asset.id
+      )
+    ).toEqual([
+      "remix-2",
+      "remix-3",
+      "remix-4",
+      "remix-5",
+      "remix-6"
+    ]);
+  });
+
+  it("selects the chronological successor and wraps inside the active window", () => {
+    const assets = [
+      rotationAsset("original", 0, "seed"),
+      ...Array.from({ length: 6 }, (_, index) =>
+        rotationAsset(`remix-${index + 1}`, index + 1)
+      )
+    ];
+
+    expect(getNextPlaybackRotationAsset(assets, "remix-3")?.id).toBe("remix-4");
+    expect(getNextPlaybackRotationAsset(assets, "remix-6")?.id).toBe("remix-2");
+    expect(getNextPlaybackRotationAsset(assets, "remix-1")?.id).toBe("remix-2");
+  });
+
   it("keeps a musical cue pending until the next remix is ready", () => {
     expect(
       decideAutomaticCueTransition({
@@ -359,6 +426,52 @@ describe("remix transition cues", () => {
         activeSlotEnded: true,
         audioSyncConnected: false,
         nextAssetReady: false
+      })
+    ).toBe(false);
+  });
+
+  it("keeps audio-synced handoffs at boundaries while requiring cue authorization", () => {
+    expect(
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor: false,
+        audioSyncConnected: false,
+        candidateAssetId: "remix-2",
+        authorizedAssetId: null
+      })
+    ).toBe(true);
+    expect(
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor: false,
+        audioSyncConnected: true,
+        candidateAssetId: "remix-2",
+        authorizedAssetId: null
+      })
+    ).toBe(false);
+    expect(
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor: false,
+        audioSyncConnected: true,
+        candidateAssetId: "remix-2",
+        authorizedAssetId: "remix-2"
+      })
+    ).toBe(true);
+  });
+
+  it("allows a read-only monitor to follow only its authoritative candidate", () => {
+    expect(
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor: true,
+        audioSyncConnected: true,
+        candidateAssetId: "server-current",
+        authorizedAssetId: null
+      })
+    ).toBe(true);
+    expect(
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor: true,
+        audioSyncConnected: false,
+        candidateAssetId: null,
+        authorizedAssetId: null
       })
     ).toBe(false);
   });

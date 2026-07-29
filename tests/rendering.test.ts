@@ -6,7 +6,10 @@ const testDoubles = vi.hoisted(() => {
       update: vi.fn()
     },
     renderJob: {
-      update: vi.fn()
+      update: vi.fn(),
+      updateMany: vi.fn(async () => ({
+        count: 1
+      }))
     },
     visualAsset: {
       update: vi.fn()
@@ -24,6 +27,9 @@ const testDoubles = vi.hoisted(() => {
       renderJob: {
         findUnique: vi.fn(),
         update: vi.fn(),
+        updateMany: vi.fn(async () => ({
+          count: 1
+        })),
         count: vi.fn()
       },
       $transaction: vi.fn(async (callback: (tx: typeof transaction) => unknown) =>
@@ -98,7 +104,9 @@ describe("Gemini Omni video requests", () => {
     ).rejects.toThrow("requires a completed source video");
   });
 
-  it("starts a synchronous image-to-video seed generation", async () => {
+  it.each([4, 6, 8])(
+    "starts a background image-to-video seed generation at %s seconds",
+    async (durationSeconds) => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -131,7 +139,7 @@ describe("Gemini Omni video requests", () => {
         prompt: "Slow liquid chrome waves",
         imageReferenceUrl: "https://example.com/reference.png",
         geminiApiKey: "test-gemini-key",
-        durationSeconds: 6
+        durationSeconds
       })
     ).resolves.toEqual({
       kind: "live",
@@ -160,7 +168,7 @@ describe("Gemini Omni video requests", () => {
 
     expect(JSON.parse(String(request.body))).toMatchObject({
       model: "gemini-omni-flash-preview",
-      background: false,
+      background: true,
       store: true,
       stream: false,
       input: [
@@ -177,7 +185,7 @@ describe("Gemini Omni video requests", () => {
       response_format: {
         type: "video",
         delivery: "uri",
-        duration: "6s",
+        duration: `${durationSeconds}s`,
         aspect_ratio: "16:9"
       },
       generation_config: {
@@ -233,7 +241,7 @@ describe("Gemini Omni video requests", () => {
 
     expect(JSON.parse(String(request.body))).toMatchObject({
       model: "gemini-omni-flash-preview",
-      background: false,
+      background: true,
       previous_interaction_id: "v1_source-interaction",
       input: "Add ultraviolet lightning"
     });
@@ -554,6 +562,139 @@ describe("Gemini Omni video requests", () => {
     expect(testDoubles.transaction.visualAsset.update).not.toHaveBeenCalled();
   });
 
+  it.each([404, 429, 503])(
+    "keeps a fresh background render alive through a transient Gemini %s lookup",
+    async (status) => {
+      testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
+        "test-gemini-key"
+      );
+      testDoubles.db.renderJob.findUnique.mockResolvedValue({
+        id: "render-transient",
+        sessionId: "session-1",
+        submissionId: null,
+        providerRequestId: "v1_transient",
+        providerOutputUri: null,
+        providerStrategy: "stateful_edit",
+        mode: "remix",
+        status: "queued",
+        createdAt: new Date(),
+        outputAsset: {
+          id: "asset-transient"
+        },
+        session: {
+          userId: "user-1",
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: "asset-current"
+          }
+        }
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              error: {
+                code: status,
+                status: "TEMPORARY",
+                message: "Try again."
+              }
+            }),
+            {
+              status,
+              headers: {
+                "Content-Type": "application/json"
+              }
+            }
+          )
+        )
+      );
+
+      await expect(
+        reconcileRenderJob("render-transient")
+      ).resolves.toEqual({
+        status: "in_progress",
+        progress: null
+      });
+
+      expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "render-transient",
+          status: {
+            in: ["queued", "in_progress"]
+          }
+        },
+        data: {
+          status: "in_progress",
+          lastPolledAt: expect.any(Date)
+        }
+      });
+      expect(testDoubles.db.$transaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it("keeps a fresh background render alive through a transient network failure", async () => {
+    testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
+      "test-gemini-key"
+    );
+    testDoubles.db.renderJob.findUnique.mockResolvedValue({
+      id: "render-network",
+      sessionId: "session-1",
+      submissionId: null,
+      providerRequestId: "v1_network",
+      providerOutputUri: null,
+      providerStrategy: "stateful_edit",
+      mode: "remix",
+      status: "in_progress",
+      createdAt: new Date(),
+      outputAsset: {
+        id: "asset-network"
+      },
+      session: {
+        userId: "user-1",
+        playbackState: {
+          id: "playback-1",
+          currentAssetId: "asset-current"
+        }
+      }
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("Temporary network failure"))
+    );
+
+    await expect(reconcileRenderJob("render-network")).resolves.toEqual({
+      status: "in_progress",
+      progress: null
+    });
+    expect(testDoubles.db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("does not reconcile a render that is already terminal", async () => {
+    testDoubles.db.renderJob.findUnique.mockResolvedValue({
+      id: "render-completed",
+      status: "completed",
+      outputAsset: {
+        id: "asset-completed"
+      },
+      session: {
+        userId: "user-1",
+        playbackState: {
+          id: "playback-1"
+        }
+      }
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(reconcileRenderJob("render-completed")).resolves.toEqual({
+      status: "completed",
+      progress: 100
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(testDoubles.db.$transaction).not.toHaveBeenCalled();
+  });
+
   it("stores and completes a URI-delivered video through the Files API", async () => {
     testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
       "test-gemini-key"
@@ -631,9 +772,12 @@ describe("Gemini Omni video requests", () => {
       completeGeminiVideoRender("v1_webhook-edit", outputUri)
     ).resolves.toBe("completed");
 
-    expect(testDoubles.db.renderJob.update).toHaveBeenCalledWith({
+    expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({
       where: {
-        id: "render-1"
+        id: "render-1",
+        status: {
+          in: ["queued", "in_progress"]
+        }
       },
       data: {
         providerOutputUri: outputUri,
@@ -648,6 +792,39 @@ describe("Gemini Omni video requests", () => {
       "asset-1",
       Buffer.from([6, 5, 4])
     );
+  });
+
+  it("does not revive a terminal render while completing an output URI", async () => {
+    testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
+      "test-gemini-key"
+    );
+    testDoubles.db.renderJob.findUnique.mockResolvedValueOnce({
+      id: "render-terminal",
+      status: "in_progress",
+      outputAsset: {
+        id: "asset-terminal"
+      },
+      session: {
+        userId: "user-1",
+        playbackState: {
+          id: "playback-1",
+          currentAssetId: "asset-current"
+        }
+      }
+    });
+    testDoubles.db.renderJob.updateMany.mockResolvedValueOnce({
+      count: 0
+    });
+
+    await expect(
+      completeGeminiVideoRender(
+        "v1_terminal",
+        "https://generativelanguage.googleapis.com/v1beta/files/terminal:download?alt=media"
+      )
+    ).resolves.toBe("in_progress");
+
+    expect(testDoubles.persistVideoAsset).not.toHaveBeenCalled();
+    expect(testDoubles.transaction.visualAsset.update).not.toHaveBeenCalled();
   });
 
   it("waits on a URI-delivered video without polling the interaction", async () => {
@@ -1017,6 +1194,7 @@ describe("Gemini Omni video requests", () => {
       })
     ).resolves.toEqual({
       failed: true,
+      changed: true,
       moderationBlockCount: 3,
       banned: true
     });
@@ -1058,5 +1236,31 @@ describe("Gemini Omni video requests", () => {
 
     expect(testDoubles.recordAuditEvent).not.toHaveBeenCalled();
     expect(testDoubles.db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("never changes a completed render back to failed", async () => {
+    testDoubles.db.renderJob.findUnique.mockResolvedValue({
+      id: "render-completed",
+      outputAssetId: "asset-completed",
+      submissionId: "submission-1",
+      sessionId: "session-1",
+      status: "completed",
+      submission: {
+        source: "web",
+        senderFingerprint: "device-hash"
+      }
+    });
+
+    await expect(
+      failRenderJob("render-completed", "Late polling failure.")
+    ).resolves.toEqual({
+      failed: false,
+      changed: false,
+      moderationBlockCount: 0,
+      banned: false
+    });
+
+    expect(testDoubles.db.$transaction).not.toHaveBeenCalled();
+    expect(testDoubles.recordAuditEvent).not.toHaveBeenCalled();
   });
 });

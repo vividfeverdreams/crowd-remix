@@ -6,13 +6,14 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
+  getChronologicalPlaybackRotation,
   getIntroducedPlaybackAssetIds,
+  getNextPlaybackRotationAsset,
   getPlaybackAttribution,
   getStandbyVideoSlot,
-  isVideoSlotVisible,
   shouldShowPlaybackIntroduction,
-  shouldStartAutomaticPlaybackTransition,
   shouldAdvancePlaybackAtVideoEnd,
+  shouldHandoffPreparedPlaybackAtBoundary,
   type VideoSlotIndex,
   getTypewriterChunkSize
 } from "@/lib/remix-transition";
@@ -31,6 +32,7 @@ type ShowScreenProps = {
 
 type QueuedTransition = {
   assetId: string;
+  assetStatus: string;
   nickname: string | null;
   promptText: string;
   referenceImageUrl: string | null;
@@ -39,9 +41,12 @@ type QueuedTransition = {
 
 type PlayableQueuedAsset = {
   id: string;
+  kind: string;
+  title: string;
   promptText: string;
   publicUrl: string | null;
   status: string;
+  createdAt: Date;
   sourceSubmission: {
     rawText: string;
     sender: string | null;
@@ -55,6 +60,7 @@ type VideoSlot = {
   url: string;
   nickname: string;
   promptText: string;
+  showAttribution: boolean;
 };
 
 type VideoSlots = [VideoSlot | null, VideoSlot | null];
@@ -87,8 +93,7 @@ export function ShowScreen({
   const audioSync = useShowAudioSync(initialSnapshot.session.id);
   const playbackMutationsEnabled = canMutateShowPlayback(isMonitor);
   const initialPlaybackAsset = initialSnapshot.session.playbackState?.currentAsset ?? null;
-  const initialPlaybackUrl = resolvePlaybackUrl(initialPlaybackAsset?.publicUrl ?? null);
-  const initialPlaybackAttribution = getPlaybackAttribution(initialPlaybackAsset);
+  const initialVideoSlot = createVideoSlot(initialPlaybackAsset);
   const introducedAssetIdsRef = useRef<Set<string> | null>(null);
 
   if (introducedAssetIdsRef.current === null) {
@@ -99,57 +104,44 @@ export function ShowScreen({
   }
 
   const [videoSlots, setVideoSlots] = useState<VideoSlots>(() => [
-    initialPlaybackAsset?.id && initialPlaybackUrl
-      ? {
-          assetId: initialPlaybackAsset.id,
-          url: initialPlaybackUrl,
-          ...initialPlaybackAttribution
-        }
-      : null,
+    initialVideoSlot,
     null
   ]);
   const [activeVideoSlot, setActiveVideoSlot] = useState<VideoSlotIndex>(0);
-  const [crossfadingToSlot, setCrossfadingToSlot] = useState<VideoSlotIndex | null>(null);
-  const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
+  const [standbyTransition, setStandbyTransition] =
+    useState<QueuedTransition | null>(null);
+  const [standbyReadyAssetId, setStandbyReadyAssetId] =
+    useState<string | null>(null);
+  const [standbyRetryRevision, setStandbyRetryRevision] = useState(0);
   const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
-  const [pendingDirectTransition, setPendingDirectTransition] =
-    useState<QueuedTransition | null>(null);
-  const [pendingSnapshotTransition, setPendingSnapshotTransition] =
-    useState<QueuedTransition | null>(null);
-  const [reconciliationEpoch, setReconciliationEpoch] = useState(0);
   const [promptExiting, setPromptExiting] = useState(false);
+  const [requestedAssetId, setRequestedAssetId] = useState<string | null>(null);
+  const [authorizedBoundaryAssetId, setAuthorizedBoundaryAssetId] =
+    useState<string | null>(null);
   const [submissionUrl, setSubmissionUrl] = useState("");
   const visualTargetRef = useRef<HTMLDivElement>(null);
   const wordmarkTargetRef = useRef<HTMLDivElement>(null);
   const firstVideoSlotRef = useRef<HTMLVideoElement>(null);
   const secondVideoSlotRef = useRef<HTMLVideoElement>(null);
   const activeVideoSlotRef = useRef<VideoSlotIndex>(0);
+  const standbyTransitionRef = useRef<QueuedTransition | null>(null);
+  const standbyReadyAssetIdRef = useRef<string | null>(null);
+  const handoffInFlightRef = useRef(false);
+  const authorizedBoundaryAssetIdRef = useRef<string | null>(null);
   const promptRevealRef = useRef<QueuedTransition | null>(null);
-  const transitionTimerRef = useRef<number | null>(null);
   const promptExitTimerRef = useRef<number | null>(null);
-  const transitionInFlightRef = useRef(false);
-  const startedTransitionAssetIdRef = useRef<string | null>(null);
+  const standbyRetryTimerRef = useRef<number | null>(null);
+  const standbyPreloadAttemptsRef = useRef(0);
   const transitionRequestAbortRef = useRef<AbortController | null>(null);
-  const currentAssetIdRef = useRef<string | null>(null);
-  const reconciledTransitionAssetIdRef = useRef<string | null>(null);
-  const reconciliationRetryTimerRef = useRef<number | null>(null);
-  const reconciliationFailureRef = useRef<{
-    assetId: string | null;
-    attempts: number;
-  }>({
-    assetId: null,
-    attempts: 0
-  });
+  const transitionCommitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const showUnmountedRef = useRef(false);
   const handledCueIdRef = useRef<string | null>(null);
   const handledManualTakeIdRef = useRef<string | null>(null);
 
   const session = snapshot.session;
   const playback = session.playbackState;
   const currentAsset = playback?.currentAsset ?? null;
-  const currentAssetUrl = resolvePlaybackUrl(currentAsset?.publicUrl ?? null);
   const nextAsset = playback?.nextAsset ?? null;
-  const nextAssetUrl = resolvePlaybackUrl(nextAsset?.publicUrl ?? null);
-  const crossfadeDurationMs = Math.max(400, Math.round((playback?.crossfadeSeconds ?? 2) * 1000));
   const nextRemixRender = session.renderJobs.find(
     (job) => job.status === "queued" || job.status === "in_progress"
   );
@@ -158,10 +150,41 @@ export function ShowScreen({
     session.progressOverlayVisible,
     Boolean(nextRemixRender)
   );
-
-  useEffect(() => {
-    currentAssetIdRef.current = currentAsset?.id ?? null;
-  }, [currentAsset?.id]);
+  const activeAssetId = videoSlots[activeVideoSlot]?.assetId ?? null;
+  const playableAssets = session.visualAssets.filter(
+    (asset): asset is PlayableQueuedAsset => Boolean(asset?.id && asset.publicUrl)
+  );
+  const playbackRotation = getChronologicalPlaybackRotation(playableAssets);
+  const predictedNextAsset = getNextPlaybackRotationAsset(
+    playbackRotation,
+    activeAssetId
+  );
+  const requestedAsset =
+    requestedAssetId && requestedAssetId !== activeAssetId
+      ? playableAssets.find((asset) => asset.id === requestedAssetId) ?? null
+      : null;
+  const authoritativeNextAsset =
+    currentAsset?.id === activeAssetId &&
+    nextAsset?.id &&
+    nextAsset.id !== activeAssetId
+      ? nextAsset
+      : null;
+  const candidateAsset = isMonitor
+    ? currentAsset?.id && currentAsset.id !== activeAssetId
+      ? currentAsset
+      : null
+    : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset;
+  const preparedBoundaryHandoff = Boolean(
+    standbyTransition &&
+      standbyReadyAssetId === standbyTransition.assetId &&
+      promptReveal?.assetId !== standbyTransition.assetId &&
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor,
+        audioSyncConnected: audioSync.connected,
+        candidateAssetId: standbyTransition.assetId,
+        authorizedAssetId: authorizedBoundaryAssetId
+      })
+  );
 
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
@@ -181,198 +204,6 @@ export function ShowScreen({
     []
   );
 
-  const scheduleReconciliationRetry = useCallback((assetId: string) => {
-    if (currentAssetIdRef.current !== assetId) {
-      reconciliationFailureRef.current = {
-        assetId: null,
-        attempts: 0
-      };
-      setReconciliationEpoch((current) => current + 1);
-      return;
-    }
-
-    const previousFailure = reconciliationFailureRef.current;
-    const attempts =
-      previousFailure.assetId === assetId
-        ? previousFailure.attempts + 1
-        : 1;
-
-    reconciliationFailureRef.current = {
-      assetId,
-      attempts
-    };
-
-    if (reconciliationRetryTimerRef.current !== null) {
-      window.clearTimeout(reconciliationRetryTimerRef.current);
-      reconciliationRetryTimerRef.current = null;
-    }
-
-    if (attempts >= 3) {
-      return;
-    }
-
-    reconciliationRetryTimerRef.current = window.setTimeout(() => {
-      reconciliationRetryTimerRef.current = null;
-      setReconciliationEpoch((current) => current + 1);
-    }, attempts === 1 ? 1_000 : 2_500);
-  }, []);
-
-  const startVisualCrossfade = useCallback(
-    (transition: QueuedTransition) => {
-      introducedAssetIdsRef.current?.add(transition.assetId);
-      setPromptExiting(true);
-      setCrossfadingToSlot(transition.videoSlot);
-
-      if (promptExitTimerRef.current !== null) {
-        window.clearTimeout(promptExitTimerRef.current);
-      }
-
-      promptExitTimerRef.current = window.setTimeout(() => {
-        setPromptReveal(null);
-        setPromptExiting(false);
-        promptExitTimerRef.current = null;
-      }, Math.min(650, Math.max(300, Math.round(crossfadeDurationMs * 0.35))));
-
-      if (transitionTimerRef.current !== null) {
-        window.clearTimeout(transitionTimerRef.current);
-      }
-
-      transitionTimerRef.current = window.setTimeout(() => {
-        const previousVideoSlot = activeVideoSlotRef.current;
-
-        activeVideoSlotRef.current = transition.videoSlot;
-        setActiveVideoSlot(transition.videoSlot);
-        setCrossfadingToSlot(null);
-        transitionTimerRef.current = null;
-        if (reconciledTransitionAssetIdRef.current === transition.assetId) {
-          reconciledTransitionAssetIdRef.current = null;
-        }
-        startedTransitionAssetIdRef.current = null;
-        transitionInFlightRef.current = false;
-        setReconciliationEpoch((current) => current + 1);
-
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            if (activeVideoSlotRef.current === transition.videoSlot) {
-              getVideoElement(previousVideoSlot)?.pause();
-            }
-          });
-        });
-      }, crossfadeDurationMs);
-    },
-    [crossfadeDurationMs, getVideoElement]
-  );
-
-  const beginCrossfade = useCallback(
-    (transition: QueuedTransition) => {
-      if (
-        !playbackMutationsEnabled ||
-        startedTransitionAssetIdRef.current === transition.assetId
-      ) {
-        return;
-      }
-
-      startedTransitionAssetIdRef.current = transition.assetId;
-
-      void (async () => {
-        const incomingVideo = getVideoElement(transition.videoSlot);
-
-        if (!incomingVideo || incomingVideo.dataset.assetId !== transition.assetId) {
-          startedTransitionAssetIdRef.current = null;
-          transitionInFlightRef.current = false;
-          promptRevealRef.current = null;
-          setPromptReveal(null);
-          return;
-        }
-
-        try {
-          await prepareVideoForCrossfade(incomingVideo);
-
-          if (incomingVideo.dataset.assetId !== transition.assetId) {
-            throw new Error("The standby video changed before the crossfade began.");
-          }
-
-          console.info("[show-transition] decoded remix in persistent video slot", {
-            assetId: transition.assetId,
-            videoSlot: transition.videoSlot,
-            readyState: incomingVideo.readyState
-          });
-
-          const requestController = new AbortController();
-          transitionRequestAbortRef.current?.abort();
-          transitionRequestAbortRef.current = requestController;
-          const requestTimeout = window.setTimeout(() => {
-            requestController.abort();
-          }, 8_000);
-          let response: Response;
-
-          try {
-            response = await fetch(`/api/sessions/${session.id}/transition`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                assetId: transition.assetId
-              }),
-              signal: requestController.signal
-            });
-          } finally {
-            window.clearTimeout(requestTimeout);
-
-            if (transitionRequestAbortRef.current === requestController) {
-              transitionRequestAbortRef.current = null;
-            }
-          }
-
-          const result = (await response.json().catch(() => null)) as {
-            transitioned?: boolean;
-          } | null;
-
-          if (!response.ok || !result?.transitioned) {
-            throw new Error("The transition endpoint rejected the cutover.");
-          }
-
-          await prepareVideoForCrossfade(incomingVideo);
-
-          if (incomingVideo.dataset.assetId !== transition.assetId) {
-            throw new Error(
-              "The standby video changed while confirming the server cutover."
-            );
-          }
-
-          setHandledNextAssetId(transition.assetId);
-          startVisualCrossfade(transition);
-        } catch (error) {
-          console.error("[show-transition] persistent-slot crossfade failed", {
-            assetId: transition.assetId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-
-          incomingVideo.pause();
-
-          if (incomingVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
-            incomingVideo.currentTime = 0;
-          }
-
-          if (transitionTimerRef.current !== null) {
-            window.clearTimeout(transitionTimerRef.current);
-            transitionTimerRef.current = null;
-          }
-
-          promptRevealRef.current = null;
-          setPromptReveal(null);
-          setPromptExiting(false);
-          setCrossfadingToSlot(null);
-          startedTransitionAssetIdRef.current = null;
-          transitionInFlightRef.current = false;
-          setReconciliationEpoch((current) => current + 1);
-        }
-      })();
-    },
-    [getVideoElement, playbackMutationsEnabled, session.id, startVisualCrossfade]
-  );
-
   const finishPromptReveal = useCallback(() => {
     const transition = promptRevealRef.current;
 
@@ -380,317 +211,23 @@ export function ShowScreen({
       return;
     }
 
-    promptRevealRef.current = null;
-    beginCrossfade(transition);
-  }, [beginCrossfade]);
-
-  const takeAsset = useCallback((asset: PlayableQueuedAsset | null) => {
-    const assetId = asset?.id;
-    const assetUrl = resolvePlaybackUrl(asset?.publicUrl ?? null);
-
-    if (
-      !playbackMutationsEnabled ||
-      !assetId ||
-      !assetUrl ||
-      assetId === handledNextAssetId ||
-      transitionInFlightRef.current
-    ) {
-      return false;
-    }
-
-    const transition = {
-      assetId,
-      nickname:
-        asset.sourceSubmission?.source === "web"
-          ? asset.sourceSubmission.sender?.trim() || null
-          : null,
-      promptText: getAudienceFacingRemixPrompt(asset.sourceSubmission?.rawText),
-      referenceImageUrl:
-        asset.sourceSubmission?.referenceImageUrl ?? null,
-      videoSlot: getStandbyVideoSlot(activeVideoSlotRef.current)
-    };
-    const attribution = getPlaybackAttribution(asset);
-    const shouldShowIntroduction = shouldShowPlaybackIntroduction(
-      asset,
-      introducedAssetIdsRef.current ?? new Set()
-    );
-
-    transitionInFlightRef.current = true;
-    setPromptExiting(false);
-    setVideoSlots((current) => {
-      const nextSlots: VideoSlots = [...current];
-      nextSlots[transition.videoSlot] = {
-        assetId,
-        url: assetUrl,
-        ...attribution
-      };
-      return nextSlots;
-    });
-
-    if (shouldShowIntroduction) {
-      setPendingDirectTransition(null);
-      promptRevealRef.current = transition;
-      setPromptReveal(transition);
-    } else {
-      promptRevealRef.current = null;
-      setPromptReveal(null);
-      setPendingDirectTransition(transition);
-    }
-
-    return true;
-  }, [handledNextAssetId, playbackMutationsEnabled]);
-
-  const takeNext = useCallback(() => takeAsset(nextAsset), [nextAsset, takeAsset]);
-
-  useEffect(() => {
-    if (!pendingDirectTransition) {
-      return;
-    }
-
-    const standbyAsset =
-      videoSlots[pendingDirectTransition.videoSlot];
-
-    if (standbyAsset?.assetId !== pendingDirectTransition.assetId) {
-      return;
-    }
-
-    setPendingDirectTransition(null);
-    beginCrossfade(pendingDirectTransition);
-  }, [beginCrossfade, pendingDirectTransition, videoSlots]);
-
-  useEffect(() => {
-    const activeAssetId = videoSlots[activeVideoSlot]?.assetId;
-
-    if (!currentAsset?.id || !currentAssetUrl) {
-      return;
-    }
-
-    if (
-      reconciliationFailureRef.current.assetId &&
-      reconciliationFailureRef.current.assetId !== currentAsset.id
-    ) {
-      if (reconciliationRetryTimerRef.current !== null) {
-        window.clearTimeout(reconciliationRetryTimerRef.current);
-        reconciliationRetryTimerRef.current = null;
-      }
-
-      reconciliationFailureRef.current = {
-        assetId: null,
-        attempts: 0
-      };
-    }
-
-    if (
-      reconciliationFailureRef.current.assetId === currentAsset.id &&
-      (reconciliationFailureRef.current.attempts >= 3 ||
-        reconciliationRetryTimerRef.current !== null)
-    ) {
-      return;
-    }
-
-    if (
-      handledNextAssetId ||
-      transitionInFlightRef.current ||
-      currentAsset.id === activeAssetId
-    ) {
-      return;
-    }
-
-    const transition: QueuedTransition = {
-      assetId: currentAsset.id,
-      nickname:
-        currentAsset.sourceSubmission?.source === "web"
-          ? currentAsset.sourceSubmission.sender?.trim() || null
-          : null,
-      promptText: getAudienceFacingRemixPrompt(
-        currentAsset.sourceSubmission?.rawText
-      ),
-      referenceImageUrl:
-        currentAsset.sourceSubmission?.referenceImageUrl ?? null,
-      videoSlot: getStandbyVideoSlot(activeVideoSlotRef.current)
-    };
-    const attribution = getPlaybackAttribution(currentAsset);
-
-    transitionInFlightRef.current = true;
-    startedTransitionAssetIdRef.current = transition.assetId;
-    promptRevealRef.current = null;
-    setPromptReveal(null);
-    setPromptExiting(false);
-    setPendingDirectTransition(null);
-    setVideoSlots((current) => {
-      const nextSlots: VideoSlots = [...current];
-      nextSlots[transition.videoSlot] = {
-        assetId: transition.assetId,
-        url: currentAssetUrl,
-        ...attribution
-      };
-      return nextSlots;
-    });
-    setPendingSnapshotTransition(transition);
-  }, [
-    activeVideoSlot,
-    currentAsset,
-    currentAssetUrl,
-    handledNextAssetId,
-    reconciliationEpoch,
-    videoSlots
-  ]);
-
-  useEffect(() => {
-    if (!pendingSnapshotTransition) {
-      return;
-    }
-
-    const standbyAsset = videoSlots[pendingSnapshotTransition.videoSlot];
-
-    if (standbyAsset?.assetId !== pendingSnapshotTransition.assetId) {
-      return;
-    }
-
-    setPendingSnapshotTransition(null);
-
-    void (async () => {
-      const incomingVideo = getVideoElement(pendingSnapshotTransition.videoSlot);
-
-      if (
-        !incomingVideo ||
-        incomingVideo.dataset.assetId !== pendingSnapshotTransition.assetId
-      ) {
-        startedTransitionAssetIdRef.current = null;
-        transitionInFlightRef.current = false;
-        scheduleReconciliationRetry(pendingSnapshotTransition.assetId);
-        return;
-      }
-
-      try {
-        await prepareVideoForCrossfade(incomingVideo);
-
-        if (incomingVideo.dataset.assetId !== pendingSnapshotTransition.assetId) {
-          throw new Error(
-            "The server-selected standby video changed before the crossfade began."
-          );
-        }
-
-        if (currentAssetIdRef.current !== pendingSnapshotTransition.assetId) {
-          throw new Error(
-            "A newer server-selected video superseded the decoded standby video."
-          );
-        }
-
-        console.info("[show-transition] reconciled server playback in persistent slot", {
-          assetId: pendingSnapshotTransition.assetId,
-          videoSlot: pendingSnapshotTransition.videoSlot,
-          readyState: incomingVideo.readyState
-        });
-        reconciliationFailureRef.current = {
-          assetId: null,
-          attempts: 0
-        };
-        reconciledTransitionAssetIdRef.current =
-          pendingSnapshotTransition.assetId;
-        startVisualCrossfade(pendingSnapshotTransition);
-      } catch (error) {
-        console.error("[show-transition] server playback reconciliation failed", {
-          assetId: pendingSnapshotTransition.assetId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        incomingVideo.pause();
-
-        if (incomingVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          incomingVideo.currentTime = 0;
-        }
-
-        startedTransitionAssetIdRef.current = null;
-        reconciledTransitionAssetIdRef.current = null;
-        transitionInFlightRef.current = false;
-        setCrossfadingToSlot(null);
-        scheduleReconciliationRetry(pendingSnapshotTransition.assetId);
-      }
-    })();
-  }, [
-    getVideoElement,
-    pendingSnapshotTransition,
-    scheduleReconciliationRetry,
-    startVisualCrossfade,
-    videoSlots
-  ]);
-
-  useEffect(() => {
-    const reconciledAssetId = reconciledTransitionAssetIdRef.current;
-
-    if (
-      !reconciledAssetId ||
-      !currentAsset?.id ||
-      currentAsset.id === reconciledAssetId
-    ) {
-      return;
-    }
-
-    if (transitionTimerRef.current !== null) {
-      window.clearTimeout(transitionTimerRef.current);
-      transitionTimerRef.current = null;
-    }
+    introducedAssetIdsRef.current?.add(transition.assetId);
+    setPromptExiting(true);
 
     if (promptExitTimerRef.current !== null) {
       window.clearTimeout(promptExitTimerRef.current);
-      promptExitTimerRef.current = null;
     }
 
-    const reconciledVideoSlot = videoSlots.findIndex(
-      (slot) => slot?.assetId === reconciledAssetId
-    );
-
-    if (reconciledVideoSlot === 0 || reconciledVideoSlot === 1) {
-      const reconciledVideo = getVideoElement(reconciledVideoSlot);
-      reconciledVideo?.pause();
-
-      if (
-        reconciledVideo &&
-        reconciledVideo.readyState >= HTMLMediaElement.HAVE_METADATA
-      ) {
-        reconciledVideo.currentTime = 0;
+    promptExitTimerRef.current = window.setTimeout(() => {
+      if (promptRevealRef.current?.assetId === transition.assetId) {
+        promptRevealRef.current = null;
+        setPromptReveal(null);
       }
-    }
 
-    setPromptExiting(false);
-    setCrossfadingToSlot(null);
-    reconciledTransitionAssetIdRef.current = null;
-    startedTransitionAssetIdRef.current = null;
-    transitionInFlightRef.current = false;
-    scheduleReconciliationRetry(reconciledAssetId);
-  }, [
-    currentAsset?.id,
-    getVideoElement,
-    scheduleReconciliationRetry,
-    videoSlots
-  ]);
-
-  useEffect(() => {
-    const activeAssetId = videoSlots[activeVideoSlot]?.assetId;
-
-    if (
-      !handledNextAssetId ||
-      currentAsset?.id !== handledNextAssetId ||
-      activeAssetId !== handledNextAssetId ||
-      crossfadingToSlot !== null
-    ) {
-      return;
-    }
-
-    console.info("[show-transition] server confirmed persistent-slot promotion", {
-      assetId: handledNextAssetId,
-      videoSlot: activeVideoSlot
-    });
-    setHandledNextAssetId(null);
-    startedTransitionAssetIdRef.current = null;
-    transitionInFlightRef.current = false;
-  }, [
-    activeVideoSlot,
-    crossfadingToSlot,
-    currentAsset?.id,
-    handledNextAssetId,
-    videoSlots
-  ]);
+      setPromptExiting(false);
+      promptExitTimerRef.current = null;
+    }, 250);
+  }, []);
 
   useEffect(() => {
     const cue = audioSync.lastCue;
@@ -706,7 +243,7 @@ export function ShowScreen({
 
     const decision = decideAutomaticCueTransition({
       autoTakeOnCue: audioSync.autoTakeOnCue,
-      nextAssetReady: Boolean(nextAsset?.id && nextAssetUrl)
+      nextAssetReady: Boolean(candidateAsset?.id && candidateAsset.publicUrl)
     });
 
     if (decision === "wait-for-remix") {
@@ -715,17 +252,17 @@ export function ShowScreen({
 
     handledCueIdRef.current = cue.id;
 
-    if (decision === "take-remix") {
-      takeNext();
+    if (decision === "take-remix" && candidateAsset?.id) {
+      authorizedBoundaryAssetIdRef.current = candidateAsset.id;
+      setAuthorizedBoundaryAssetId(candidateAsset.id);
     }
   }, [
     audioSync.autoTakeOnCue,
     audioSync.connected,
     audioSync.lastCue,
-    nextAsset?.id,
-    nextAssetUrl,
-    playbackMutationsEnabled,
-    takeNext
+    candidateAsset?.id,
+    candidateAsset?.publicUrl,
+    playbackMutationsEnabled
   ]);
 
   useEffect(() => {
@@ -739,42 +276,361 @@ export function ShowScreen({
       return;
     }
 
-    const selectedHistoricalAsset = audioSync.manualTakeAssetId
-      ? session.visualAssets.find((asset) => asset?.id === audioSync.manualTakeAssetId) ?? null
-      : null;
-    const selectedAsset = selectedHistoricalAsset ?? nextAsset;
+    const selectedAssetId = audioSync.manualTakeAssetId ?? nextAsset?.id ?? null;
 
-    if (takeAsset(selectedAsset)) {
-      handledManualTakeIdRef.current = requestId;
+    if (!selectedAssetId || selectedAssetId === activeAssetId) {
+      return;
     }
+
+    handledManualTakeIdRef.current = requestId;
+    authorizedBoundaryAssetIdRef.current = selectedAssetId;
+    setAuthorizedBoundaryAssetId(selectedAssetId);
+    setRequestedAssetId(selectedAssetId);
   }, [
+    activeAssetId,
     audioSync.manualTakeAssetId,
     audioSync.manualTakeRequestId,
-    nextAsset,
     playbackMutationsEnabled,
-    session.visualAssets,
-    takeAsset
+    nextAsset?.id
   ]);
 
   useEffect(() => {
-    return () => {
-      if (transitionTimerRef.current !== null) {
-        window.clearTimeout(transitionTimerRef.current);
+    const asset = candidateAsset as PlayableQueuedAsset | null;
+    const assetUrl = resolvePlaybackUrl(asset?.publicUrl ?? null);
+
+    if (!asset?.id || !assetUrl || asset.id === activeAssetId) {
+      standbyTransitionRef.current = null;
+      standbyReadyAssetIdRef.current = null;
+      standbyPreloadAttemptsRef.current = 0;
+
+      if (standbyRetryTimerRef.current !== null) {
+        window.clearTimeout(standbyRetryTimerRef.current);
+        standbyRetryTimerRef.current = null;
       }
+
+      setStandbyReadyAssetId(null);
+      setStandbyTransition(null);
+      return;
+    }
+
+    const videoSlot = getStandbyVideoSlot(activeVideoSlotRef.current);
+    const existingTransition = standbyTransitionRef.current;
+
+    if (
+      existingTransition?.assetId === asset.id &&
+      existingTransition.videoSlot === videoSlot
+    ) {
+      return;
+    }
+
+    const transition: QueuedTransition = {
+      assetId: asset.id,
+      assetStatus: asset.status,
+      nickname:
+        asset.sourceSubmission?.source === "web"
+          ? asset.sourceSubmission.sender?.trim() || null
+          : null,
+      promptText: getAudienceFacingRemixPrompt(
+        asset.sourceSubmission?.rawText ?? asset.promptText
+      ),
+      referenceImageUrl: asset.sourceSubmission?.referenceImageUrl ?? null,
+      videoSlot
+    };
+    const nextVideoSlot = createVideoSlot(asset);
+
+    if (!nextVideoSlot) {
+      return;
+    }
+
+    standbyReadyAssetIdRef.current = null;
+    setStandbyReadyAssetId(null);
+    standbyPreloadAttemptsRef.current = 0;
+
+    if (standbyRetryTimerRef.current !== null) {
+      window.clearTimeout(standbyRetryTimerRef.current);
+      standbyRetryTimerRef.current = null;
+    }
+
+    standbyTransitionRef.current = transition;
+    setStandbyTransition(transition);
+    setVideoSlots((current) => {
+      const nextSlots: VideoSlots = [...current];
+      nextSlots[videoSlot] = nextVideoSlot;
+      return nextSlots;
+    });
+
+    if (promptRevealRef.current?.assetId !== transition.assetId) {
+      promptRevealRef.current = null;
+      setPromptReveal(null);
+      setPromptExiting(false);
+    }
+  }, [
+    activeAssetId,
+    candidateAsset?.id,
+    candidateAsset?.promptText,
+    candidateAsset?.publicUrl,
+    candidateAsset?.sourceSubmission?.rawText,
+    candidateAsset?.sourceSubmission?.referenceImageUrl,
+    candidateAsset?.sourceSubmission?.sender,
+    candidateAsset?.sourceSubmission?.source,
+    candidateAsset?.status
+  ]);
+
+  useEffect(() => {
+    if (!standbyTransition) {
+      return;
+    }
+
+    const video = getVideoElement(standbyTransition.videoSlot);
+
+    if (!video || video.dataset.assetId !== standbyTransition.assetId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void prepareVideoForStandby(video)
+      .then(() => {
+        if (
+          !cancelled &&
+          standbyTransitionRef.current?.assetId === standbyTransition.assetId &&
+          video.dataset.assetId === standbyTransition.assetId
+        ) {
+          standbyReadyAssetIdRef.current = standbyTransition.assetId;
+          setStandbyReadyAssetId(standbyTransition.assetId);
+          standbyPreloadAttemptsRef.current = 0;
+
+          if (
+            shouldShowPlaybackIntroduction(
+              {
+                id: standbyTransition.assetId,
+                status: standbyTransition.assetStatus
+              },
+              introducedAssetIdsRef.current ?? new Set()
+            )
+          ) {
+            setPromptExiting(false);
+            promptRevealRef.current = standbyTransition;
+            setPromptReveal(standbyTransition);
+          }
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          standbyReadyAssetIdRef.current = null;
+          setStandbyReadyAssetId(null);
+          console.error("[show-video] standby preload failed", {
+            assetId: standbyTransition.assetId,
+            videoSlot: standbyTransition.videoSlot,
+            error: error instanceof Error ? error.message : String(error)
+          });
+
+          standbyPreloadAttemptsRef.current += 1;
+
+          if (standbyPreloadAttemptsRef.current <= 3) {
+            const retryDelay = standbyPreloadAttemptsRef.current * 750;
+
+            standbyRetryTimerRef.current = window.setTimeout(() => {
+              standbyRetryTimerRef.current = null;
+              setStandbyRetryRevision((revision) => revision + 1);
+            }, retryDelay);
+          }
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    getVideoElement,
+    standbyRetryRevision,
+    standbyTransition,
+    videoSlots
+  ]);
+
+  const commitPlaybackTransition = useCallback(
+    (assetId: string) => {
+      if (!playbackMutationsEnabled) {
+        return;
+      }
+
+      const commit = async () => {
+        let failureReason = "The server did not confirm the playback handoff.";
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          if (showUnmountedRef.current) {
+            return;
+          }
+
+          const requestController = new AbortController();
+          transitionRequestAbortRef.current = requestController;
+          const requestTimeout = window.setTimeout(() => {
+            requestController.abort();
+          }, 8_000);
+
+          try {
+            const response = await fetch(
+              `/api/sessions/${session.id}/transition`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                  assetId
+                }),
+                signal: requestController.signal
+              }
+            );
+            const result = (await response.json().catch(() => null)) as {
+              transitioned?: boolean;
+            } | null;
+
+            if (response.ok && result?.transitioned) {
+              return;
+            }
+
+            failureReason = `Playback handoff was rejected with status ${response.status}.`;
+
+            if (response.status < 500) {
+              break;
+            }
+          } catch (error) {
+            failureReason =
+              error instanceof Error ? error.message : String(error);
+          } finally {
+            window.clearTimeout(requestTimeout);
+
+            if (transitionRequestAbortRef.current === requestController) {
+              transitionRequestAbortRef.current = null;
+            }
+          }
+
+          if (attempt < 3) {
+            await waitForPlaybackRetry(attempt * 250);
+          }
+        }
+
+        if (showUnmountedRef.current) {
+          return;
+        }
+
+        console.error("[show-transition] server handoff could not be reconciled", {
+          assetId,
+          failureReason
+        });
+        // The display changes locally at the media boundary. If all server
+        // commits fail, reload from the authoritative snapshot rather than
+        // letting later rotations drift away from the generation queue.
+        window.location.reload();
+      };
+
+      transitionCommitQueueRef.current = transitionCommitQueueRef.current.then(
+        commit,
+        commit
+      );
+    },
+    [playbackMutationsEnabled, session.id]
+  );
+
+  const handleVideoBoundary = useCallback(
+    (videoSlot: VideoSlotIndex, outgoingVideo: HTMLVideoElement) => {
+      if (
+        activeVideoSlotRef.current !== videoSlot ||
+        handoffInFlightRef.current
+      ) {
+        return;
+      }
+
+      const transition = standbyTransitionRef.current;
+      const introductionPending =
+        transition &&
+        promptRevealRef.current?.assetId === transition.assetId;
+      const boundaryAuthorized = shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor,
+        audioSyncConnected: audioSync.connected,
+        candidateAssetId: transition?.assetId ?? null,
+        authorizedAssetId: authorizedBoundaryAssetIdRef.current
+      });
+
+      if (
+        !transition ||
+        standbyReadyAssetIdRef.current !== transition.assetId ||
+        introductionPending ||
+        !boundaryAuthorized
+      ) {
+        void restartVideoAtBoundary(outgoingVideo);
+        return;
+      }
+
+      const incomingVideo = getVideoElement(transition.videoSlot);
+
+      if (
+        !incomingVideo ||
+        incomingVideo.dataset.assetId !== transition.assetId
+      ) {
+        void restartVideoAtBoundary(outgoingVideo);
+        return;
+      }
+
+      handoffInFlightRef.current = true;
+
+      void playPreparedVideoAtBoundary(incomingVideo)
+        .then(() => {
+          if (
+            standbyTransitionRef.current?.assetId !== transition.assetId ||
+            incomingVideo.dataset.assetId !== transition.assetId
+          ) {
+            throw new Error("The prepared standby clip changed at its boundary.");
+          }
+
+          introducedAssetIdsRef.current?.add(transition.assetId);
+          activeVideoSlotRef.current = transition.videoSlot;
+          standbyTransitionRef.current = null;
+          standbyReadyAssetIdRef.current = null;
+          authorizedBoundaryAssetIdRef.current = null;
+          setStandbyReadyAssetId(null);
+          setAuthorizedBoundaryAssetId(null);
+          setActiveVideoSlot(transition.videoSlot);
+          setStandbyTransition(null);
+          setRequestedAssetId((current) =>
+            current === transition.assetId ? null : current
+          );
+          commitPlaybackTransition(transition.assetId);
+        })
+        .catch((error) => {
+          incomingVideo.pause();
+          void restartVideoAtBoundary(outgoingVideo);
+          console.error("[show-transition] prepared boundary handoff failed", {
+            assetId: transition.assetId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        })
+        .finally(() => {
+          handoffInFlightRef.current = false;
+        });
+    },
+    [audioSync.connected, commitPlaybackTransition, getVideoElement, isMonitor]
+  );
+
+  useEffect(() => {
+    showUnmountedRef.current = false;
+
+    return () => {
+      showUnmountedRef.current = true;
 
       if (promptExitTimerRef.current !== null) {
         window.clearTimeout(promptExitTimerRef.current);
       }
 
-      if (reconciliationRetryTimerRef.current !== null) {
-        window.clearTimeout(reconciliationRetryTimerRef.current);
+      if (standbyRetryTimerRef.current !== null) {
+        window.clearTimeout(standbyRetryTimerRef.current);
       }
 
       transitionRequestAbortRef.current?.abort();
       transitionRequestAbortRef.current = null;
       promptRevealRef.current = null;
-      reconciledTransitionAssetIdRef.current = null;
-      startedTransitionAssetIdRef.current = null;
+      standbyTransitionRef.current = null;
     };
   }, []);
 
@@ -791,48 +647,27 @@ export function ShowScreen({
           }
 
           const videoSlot = index as VideoSlotIndex;
-          const isIncoming = crossfadingToSlot === videoSlot;
           const isActive = activeVideoSlot === videoSlot;
-          const isVisible = isVideoSlotVisible({
-            slot: videoSlot,
-            activeSlot: activeVideoSlot,
-            incomingSlot: crossfadingToSlot
-          });
 
           return (
             <Fragment key={`persistent-video-slot-${videoSlot}`}>
               <video
                 ref={videoSlot === 0 ? firstVideoSlotRef : secondVideoSlotRef}
                 data-asset-id={slot.assetId}
-                className="absolute inset-0 h-full w-full bg-black object-cover transition-opacity ease-linear [backface-visibility:hidden] [transform:translateZ(0)]"
+                className="absolute inset-0 h-full w-full bg-black object-cover transition-opacity duration-100 ease-linear [backface-visibility:hidden] [transform:translateZ(0)]"
                 style={{
-                  opacity: isVisible ? 1 : 0,
-                  zIndex: isIncoming ? 2 : isActive ? 1 : 0,
-                  transitionDuration: `${crossfadeDurationMs}ms`,
+                  opacity: isActive ? 1 : 0,
+                  zIndex: isActive ? 2 : 1,
                   willChange: "opacity"
                 }}
                 src={slot.url}
                 autoPlay={isActive}
-                loop
+                loop={isActive && !preparedBoundaryHandoff}
                 muted
                 playsInline
                 preload="auto"
-                onTimeUpdate={(event) => {
-                  const video = event.currentTarget;
-
-                  if (
-                    shouldStartAutomaticPlaybackTransition({
-                      isMonitor,
-                      activeSlot: activeVideoSlotRef.current === videoSlot,
-                      audioSyncConnected: audioSync.connected,
-                      nextAssetReady: Boolean(nextAsset?.id && nextAssetUrl),
-                      transitionInFlight: transitionInFlightRef.current,
-                      currentTime: video.currentTime,
-                      duration: video.duration
-                    })
-                  ) {
-                    takeNext();
-                  }
+                onEnded={(event) => {
+                  handleVideoBoundary(videoSlot, event.currentTarget);
                 }}
                 onError={(event) => {
                   console.error("[show-video] media element failed", {
@@ -850,22 +685,24 @@ export function ShowScreen({
                   }
                 }}
               />
-              <aside
-                aria-hidden={!isVisible}
-                className="pointer-events-none absolute bottom-[clamp(1rem,3vw,3rem)] left-[clamp(1rem,3vw,3rem)] max-w-[min(42rem,78vw)] rounded-2xl border border-white/15 bg-black/55 px-[clamp(0.9rem,1.8vw,1.4rem)] py-[clamp(0.75rem,1.4vw,1.1rem)] shadow-2xl backdrop-blur-md transition-opacity ease-linear"
-                style={{
-                  opacity: isVisible ? 1 : 0,
-                  zIndex: isIncoming ? 26 : isActive ? 25 : 24,
-                  transitionDuration: `${crossfadeDurationMs}ms`
-                }}
-              >
-                <p className="font-mono text-[clamp(0.6rem,1.2vw,0.82rem)] font-semibold uppercase tracking-[0.28em] text-plasma">
-                  {slot.nickname}
-                </p>
-                <p className="mt-2 line-clamp-2 text-[clamp(0.9rem,1.8vw,1.35rem)] font-medium leading-snug text-white">
-                  {slot.promptText}
-                </p>
-              </aside>
+              {slot.showAttribution ? (
+                <aside
+                  aria-hidden={!isActive}
+                  data-attribution-asset-id={slot.assetId}
+                  className="pointer-events-none absolute bottom-[clamp(1rem,3vw,3rem)] right-[clamp(1rem,3vw,3rem)] max-w-[min(42rem,78vw)] rounded-2xl border border-white/15 bg-black/55 px-[clamp(0.9rem,1.8vw,1.4rem)] py-[clamp(0.75rem,1.4vw,1.1rem)] text-right shadow-2xl backdrop-blur-md transition-opacity duration-100 ease-linear"
+                  style={{
+                    opacity: isActive ? 1 : 0,
+                    zIndex: 25
+                  }}
+                >
+                  <p className="font-mono text-[clamp(0.6rem,1.2vw,0.82rem)] font-semibold uppercase tracking-[0.28em] text-plasma">
+                    {slot.nickname}
+                  </p>
+                  <p className="mt-2 text-[clamp(0.9rem,1.8vw,1.35rem)] font-medium leading-snug text-white">
+                    {slot.promptText}
+                  </p>
+                </aside>
+              ) : null}
             </Fragment>
           );
         })}
@@ -1159,7 +996,22 @@ function resolvePlaybackUrl(url: string | null) {
   }
 }
 
-async function prepareVideoForCrossfade(video: HTMLVideoElement) {
+function createVideoSlot(asset: PlayableQueuedAsset | null): VideoSlot | null {
+  const assetUrl = resolvePlaybackUrl(asset?.publicUrl ?? null);
+
+  if (!asset?.id || !assetUrl) {
+    return null;
+  }
+
+  return {
+    assetId: asset.id,
+    url: assetUrl,
+    ...getPlaybackAttribution(asset),
+    showAttribution: Boolean(asset.sourceSubmission)
+  };
+}
+
+async function prepareVideoForStandby(video: HTMLVideoElement) {
   video.pause();
 
   if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -1167,8 +1019,34 @@ async function prepareVideoForCrossfade(video: HTMLVideoElement) {
   }
 
   await seekVideoToStart(video);
+}
+
+async function playPreparedVideoAtBoundary(video: HTMLVideoElement) {
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    await prepareVideoForStandby(video);
+  } else if (video.currentTime > 0.01) {
+    await seekVideoToStart(video);
+  }
+
   await video.play();
-  await waitForDecodedVideoFrame(video);
+}
+
+async function restartVideoAtBoundary(video: HTMLVideoElement) {
+  try {
+    await seekVideoToStart(video);
+    await video.play();
+  } catch (error) {
+    console.error("[show-video] could not restart the active loop", {
+      assetId: video.dataset.assetId ?? null,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+function waitForPlaybackRetry(delayMs: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
 }
 
 function seekVideoToStart(video: HTMLVideoElement) {
@@ -1252,85 +1130,5 @@ function waitForVideoEvent(
     video.addEventListener("error", handleError, {
       once: true
     });
-  });
-}
-
-function waitForDecodedVideoFrame(video: HTMLVideoElement) {
-  if (typeof video.requestVideoFrameCallback === "function") {
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let callbackId: number | null = null;
-      const cleanup = () => {
-        window.clearTimeout(timeout);
-        video.removeEventListener("error", handleError);
-      };
-      const finish = (callback: () => void) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        cleanup();
-        callback();
-      };
-      const handleError = () =>
-        finish(() => reject(new Error("The browser could not decode a remix frame.")));
-      const timeout = window.setTimeout(() => {
-        if (callbackId !== null) {
-          video.cancelVideoFrameCallback(callbackId);
-        }
-
-        finish(() => reject(new Error("Timed out waiting for a decoded remix frame.")));
-      }, 3_000);
-
-      video.addEventListener("error", handleError, {
-        once: true
-      });
-      callbackId = video.requestVideoFrameCallback(() => finish(resolve));
-    });
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    const initialTime = video.currentTime;
-    let settled = false;
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      video.removeEventListener("playing", handleProgress);
-      video.removeEventListener("timeupdate", handleProgress);
-      video.removeEventListener("error", handleError);
-    };
-    const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      cleanup();
-      callback();
-    };
-    const handleProgress = () => {
-      const playbackAdvanced =
-        video.currentTime > initialTime + 0.01 ||
-        video.currentTime < initialTime;
-
-      if (
-        playbackAdvanced &&
-        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-      ) {
-        finish(resolve);
-      }
-    };
-    const handleError = () =>
-      finish(() => reject(new Error("The browser could not decode a remix frame.")));
-    const timeout = window.setTimeout(() => {
-      finish(() => reject(new Error("Timed out waiting for remix playback to advance.")));
-    }, 3_000);
-
-    video.addEventListener("playing", handleProgress);
-    video.addEventListener("timeupdate", handleProgress);
-    video.addEventListener("error", handleError, {
-      once: true
-    });
-    handleProgress();
   });
 }

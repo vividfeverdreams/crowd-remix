@@ -36,8 +36,9 @@ export default async function PublicSubmissionPage({ params }: PublicRouteProps)
           <h1 className="mt-4 text-4xl font-semibold text-white">{session.artistName}</h1>
           <p className="mt-3 text-base text-white/72">Track focus: {session.trackName}</p>
           <p className="mt-5 max-w-2xl text-sm leading-7 text-white/70">
-            Tell us what you want to see next. The system keeps every winning idea inside the artist and track mood, blocks unsafe requests,
-            and folds the best crowd prompt into the live visual loop.
+            Roll a remix statement, choose one of its four answers, or attach the
+            photo it asks for. Venue-safe AI folds the best crowd choices into
+            the live visual loop.
           </p>
         </div>
 

@@ -96,7 +96,24 @@ export const sessionPrefillSchema = z.object({
 });
 
 export const publicSubmissionSchema = z.object({
-  prompt: z.string().trim().min(4).max(600),
+  templateId: z
+    .string()
+    .trim()
+    .min(1, "Choose a remix statement.")
+    .max(100)
+    .regex(/^[a-z0-9-]+$/, "Choose a valid remix statement."),
+  responseId: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === ""
+        ? undefined
+        : value,
+    z
+      .string()
+      .trim()
+      .max(120)
+      .regex(/^[a-z0-9-]+$/, "Choose a valid remix answer.")
+      .optional()
+  ),
   senderLabel: z
     .string()
     .trim()

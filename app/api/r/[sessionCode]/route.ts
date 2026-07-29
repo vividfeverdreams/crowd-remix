@@ -4,6 +4,7 @@ import { getPublicSubmissionStatus } from "@/lib/public-submission-status";
 import { publicSubmissionSchema } from "@/lib/schemas";
 import { getClientIp } from "@/lib/request";
 import { validateSubmissionImage } from "@/lib/submission-image";
+import { resolvePublicRemixPromptSelection } from "@/lib/public-remix-prompts";
 
 type PublicApiRouteProps = {
   params: Promise<{
@@ -71,7 +72,58 @@ export async function POST(request: NextRequest, { params }: PublicApiRouteProps
   if (!parsed.success) {
     return NextResponse.json(
       {
-        error: "Send a slightly more specific remix idea."
+        error:
+          parsed.error.issues[0]?.message ??
+          "Choose a remix statement and answer."
+      },
+      {
+        status: 400
+      }
+    );
+  }
+
+  const resolvedPrompt = (() => {
+    try {
+      return resolvePublicRemixPromptSelection(
+        parsed.data.templateId,
+        parsed.data.responseId
+      );
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Choose a remix statement and answer."
+      };
+    }
+  })();
+
+  if ("error" in resolvedPrompt) {
+    return NextResponse.json(
+      {
+        error: resolvedPrompt.error
+      },
+      {
+        status: 400
+      }
+    );
+  }
+
+  if (resolvedPrompt.kind === "image" && !submissionRequest.referenceImage) {
+    return NextResponse.json(
+      {
+        error: "Choose an image for this remix statement."
+      },
+      {
+        status: 400
+      }
+    );
+  }
+
+  if (resolvedPrompt.kind === "choice" && submissionRequest.referenceImage) {
+    return NextResponse.json(
+      {
+        error: "Images can only be added to image remix statements."
       },
       {
         status: 400
@@ -91,16 +143,22 @@ export async function POST(request: NextRequest, { params }: PublicApiRouteProps
     const result = await ingestSubmission({
       sessionCode,
       source: "web",
-      prompt: parsed.data.prompt,
+      prompt: resolvedPrompt.prompt,
       sender: parsed.data.senderLabel,
       participantToken,
       senderFingerprintSeed: getClientIp(request),
       referenceImage: submissionRequest?.referenceImage ?? null
     });
 
-    const response = NextResponse.json(result, {
-      status: result.status === "banned" ? 403 : 200
-    });
+    const response = NextResponse.json(
+      {
+        ...result,
+        prompt: resolvedPrompt.prompt
+      },
+      {
+        status: result.status === "banned" ? 403 : 200
+      }
+    );
 
     if (savedParticipantToken.length < 16) {
       response.cookies.set(participantDeviceCookieName, participantToken, {
@@ -149,7 +207,8 @@ async function readPublicSubmissionRequest(request: NextRequest) {
 
   return {
     fields: {
-      prompt: String(formData.get("prompt") ?? ""),
+      templateId: String(formData.get("templateId") ?? ""),
+      responseId: String(formData.get("responseId") ?? ""),
       senderLabel: String(formData.get("senderLabel") ?? ""),
       participantToken: String(formData.get("participantToken") ?? "")
     },

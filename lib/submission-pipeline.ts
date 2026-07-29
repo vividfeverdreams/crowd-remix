@@ -348,17 +348,20 @@ export async function attemptAutomatedSelection(sessionId: string) {
     return null;
   }
 
-  await db.promptSubmission.update({
-    where: {
-      id: nextSubmission.id
-    },
-    data: {
-      status: "queued",
-      selectedAt: new Date()
-    }
-  });
-
   return queueAutomatedRender(sessionId, nextSubmission.id, session.playbackState.currentAssetId ? "remix" : "seed", nextSubmission.rankingResult.winningPrompt);
+}
+
+class AutomatedRenderSubmissionClaimConflict extends Error {}
+
+function getNextGenerationLeaseTimestamp(value: Date | string | null | undefined) {
+  const previousTimestamp = value ? new Date(value).getTime() : Number.NaN;
+  const now = Date.now();
+
+  return new Date(
+    Number.isFinite(previousTimestamp)
+      ? Math.max(now, previousTimestamp + 1)
+      : now
+  );
 }
 
 export async function queueAutomatedRender(
@@ -367,62 +370,198 @@ export async function queueAutomatedRender(
   requestedMode: "seed" | "remix",
   promptText: string
 ) {
-  const [session, sourceSubmission] = await Promise.all([
-    db.dJSession.findUnique({
-      where: {
-        id: sessionId
-      },
-      include: {
-        playbackState: true,
-        renderJobs: {
-          where: {
-            status: {
-              in: ["queued", "in_progress"]
-            }
-          }
+  let queuedRender;
+
+  try {
+    queuedRender = await db.$transaction(async (tx: any) => {
+      const session = await tx.dJSession.findUnique({
+        where: {
+          id: sessionId
         },
-        visualAssets: {
-          where: {
-            status: {
-              in: ["live", "ready"]
+        include: {
+          playbackState: {
+            include: {
+              currentAsset: true
             }
           },
-          orderBy: {
-            createdAt: "desc"
+          renderJobs: {
+            where: {
+              status: {
+                in: ["queued", "in_progress"]
+              }
+            },
+            take: 1
+          },
+          visualAssets: {
+            where: {
+              status: "ready",
+              publicUrl: {
+                not: null
+              }
+            },
+            select: {
+              id: true
+            },
+            take: 1
           }
         }
+      });
+
+      if (!session?.playbackState) {
+        return null;
       }
-    }),
-    submissionId
-      ? db.promptSubmission.findUnique({
+
+      if (session.renderJobs.length > 0 || session.visualAssets.length > 0) {
+        return null;
+      }
+
+      const [generationHead, sourceSubmission] = await Promise.all([
+        requestedMode === "remix"
+          ? tx.renderJob.findFirst({
+              where: {
+                sessionId,
+                status: "completed"
+              },
+              orderBy: [
+                {
+                  createdAt: "desc"
+                },
+                {
+                  id: "desc"
+                }
+              ],
+              select: {
+                outputAsset: {
+                  select: {
+                    id: true,
+                    publicUrl: true,
+                    sourceVideoId: true,
+                    status: true
+                  },
+                }
+              }
+            })
+          : Promise.resolve(null),
+        submissionId
+          ? tx.promptSubmission.findUnique({
+              where: {
+                id: submissionId
+              },
+              select: {
+                referenceImageUrl: true
+              }
+            })
+          : Promise.resolve(null)
+      ]);
+      // Completed render order is the generation lineage. Playback can rotate or
+      // manually cue any historical clip without moving this generation head.
+      const completedOutput = generationHead?.outputAsset;
+      const completedOutputIsUsable = Boolean(
+        completedOutput?.publicUrl &&
+          ["ready", "live", "archived"].includes(completedOutput.status)
+      );
+      const sourceAsset = generationHead
+        ? completedOutputIsUsable
+          ? completedOutput
+          : null
+        : session.playbackState.currentAsset?.publicUrl
+          ? session.playbackState.currentAsset
+          : null;
+
+      if (requestedMode === "remix" && !sourceAsset?.publicUrl) {
+        return {
+          sourceMissing: true as const,
+          session
+        };
+      }
+
+      // Updating the session timestamp is a lightweight per-session generation
+      // lease. Competing transactions that read the same timestamp cannot both
+      // create sibling remixes from one parent.
+      const generationClaim = await tx.dJSession.updateMany({
+        where: {
+          id: session.id,
+          updatedAt: session.updatedAt
+        },
+        data: {
+          updatedAt: getNextGenerationLeaseTimestamp(session.updatedAt)
+        }
+      });
+
+      if (generationClaim.count !== 1) {
+        return null;
+      }
+
+      if (submissionId) {
+        const submissionClaim = await tx.promptSubmission.updateMany({
           where: {
-            id: submissionId
+            id: submissionId,
+            sessionId,
+            status: "approved",
+            selectedAt: null
           },
-          select: {
-            referenceImageUrl: true
+          data: {
+            status: "queued",
+            selectedAt: new Date()
           }
-        })
-      : Promise.resolve(null)
-  ]);
+        });
 
-  if (!session?.playbackState) {
+        if (submissionClaim.count !== 1) {
+          // Throwing rolls back the session lease too, so a losing selector
+          // cannot strand this prompt in the queued state without a render job.
+          throw new AutomatedRenderSubmissionClaimConflict();
+        }
+      }
+
+      const mode = requestedMode;
+      const durationSeconds = normalizeVideoDurationSeconds(
+        session.videoDurationSeconds
+      );
+      const outputAsset = await tx.visualAsset.create({
+        data: {
+          sessionId,
+          sourceSubmissionId: submissionId,
+          kind: mode,
+          title: mode === "seed" ? "Seed Loop" : "DREAM SEQUENCE",
+          promptText,
+          durationSeconds,
+          status: "processing"
+        }
+      });
+      const renderJob = await tx.renderJob.create({
+        data: {
+          sessionId,
+          submissionId,
+          sourceAssetId: sourceAsset?.id ?? null,
+          outputAssetId: outputAsset.id,
+          mode,
+          status: "queued",
+          promptText
+        }
+      });
+
+      return {
+        sourceMissing: false as const,
+        durationSeconds,
+        renderJob,
+        session,
+        sourceAsset,
+        sourceSubmission
+      };
+    });
+  } catch (error) {
+    if (error instanceof AutomatedRenderSubmissionClaimConflict) {
+      return null;
+    }
+
+    throw error;
+  }
+
+  if (!queuedRender) {
     return null;
   }
 
-  if (
-    session.renderJobs.length > 0 ||
-    session.visualAssets.some((asset: any) => asset.status === "ready")
-  ) {
-    return null;
-  }
-
-  const sourceAsset =
-    session.visualAssets.find((asset: any) => asset.status === "live") ?? null;
-  const canEditExistingVideo =
-    requestedMode === "remix" &&
-    Boolean(sourceAsset?.publicUrl);
-
-  if (requestedMode === "remix" && !canEditExistingVideo) {
+  if (queuedRender.sourceMissing) {
     await recordAuditEvent({
       type: "render.source_missing",
       summary: "Skipped a remix because no source video was available",
@@ -432,34 +571,14 @@ export async function queueAutomatedRender(
     return null;
   }
 
+  const {
+    durationSeconds,
+    renderJob,
+    session,
+    sourceAsset,
+    sourceSubmission
+  } = queuedRender;
   const mode = requestedMode;
-  const durationSeconds = normalizeVideoDurationSeconds(
-    session.videoDurationSeconds
-  );
-
-  const outputAsset = await db.visualAsset.create({
-    data: {
-      sessionId,
-      sourceSubmissionId: submissionId,
-      kind: mode,
-      title: mode === "seed" ? "Seed Loop" : "DREAM SEQUENCE",
-      promptText,
-      durationSeconds,
-      status: "processing"
-    }
-  });
-
-  const renderJob = await db.renderJob.create({
-    data: {
-      sessionId,
-      submissionId,
-      sourceAssetId: sourceAsset?.id ?? null,
-      outputAssetId: outputAsset.id,
-      mode,
-      status: "queued",
-      promptText
-    }
-  });
 
   const geminiApiKey = session.userId
     ? await getEffectiveGeminiApiKeyForUser(String(session.userId))
@@ -509,31 +628,47 @@ export async function queueAutomatedRender(
   }
 
   if (started.kind === "demo") {
-    await db.renderJob.update({
+    const completionClaim = await db.renderJob.updateMany({
       where: {
-        id: renderJob.id
+        id: renderJob.id,
+        status: "queued",
+        providerRequestId: null
       },
       data: {
         providerRequestId: started.videoId,
-        status: "completed"
+        status: "queued",
+        failureReason: null
       }
     });
+
+    if (completionClaim.count !== 1) {
+      return null;
+    }
 
     await reconcileRenderJob(renderJob.id);
     return renderJob;
   }
 
-  await db.renderJob.update({
+  const startClaim = await db.renderJob.updateMany({
     where: {
-      id: renderJob.id
+      id: renderJob.id,
+      status: "queued",
+      providerRequestId: null
     },
     data: {
       providerRequestId: started.requestId,
       providerOutputUri: started.outputUri,
       providerStrategy: started.strategy,
-      status: "queued"
+      status: "queued",
+      failureReason: null
     }
   });
+
+  // A late provider response must never resurrect a job that reconciliation or
+  // moderation already made terminal.
+  if (startClaim.count !== 1) {
+    return null;
+  }
 
   if (started.outputUri) {
     await completeGeminiVideoRender(started.requestId, started.outputUri);

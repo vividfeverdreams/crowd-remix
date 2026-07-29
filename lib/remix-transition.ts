@@ -1,12 +1,79 @@
 export type AutomaticCueDecision = "ignore" | "wait-for-remix" | "take-remix";
 export type VideoSlotIndex = 0 | 1;
 
+export type PlaybackRotationAsset = {
+  id: string;
+  kind?: string | null;
+  createdAt: Date | string;
+};
+
 type PlaybackIntroductionAsset = {
   id: string;
   status?: string | null;
 } | null;
 
 const automaticPlaybackTransitionLeadSeconds = 0.5;
+
+function comparePlaybackAssets(
+  left: PlaybackRotationAsset,
+  right: PlaybackRotationAsset
+) {
+  const leftTime = new Date(left.createdAt).getTime();
+  const rightTime = new Date(right.createdAt).getTime();
+  const normalizedLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
+  const normalizedRightTime = Number.isFinite(rightTime) ? rightTime : 0;
+
+  return normalizedLeftTime - normalizedRightTime || left.id.localeCompare(right.id);
+}
+
+export function getChronologicalPlaybackRotation<
+  Asset extends PlaybackRotationAsset
+>(assets: Asset[], rotationSize = 5) {
+  if (rotationSize <= 0) {
+    return [] as Asset[];
+  }
+
+  const chronologicalAssets = [...assets].sort(comparePlaybackAssets);
+
+  if (chronologicalAssets.length <= 1) {
+    return chronologicalAssets;
+  }
+
+  const originalAsset =
+    chronologicalAssets.find((asset) => asset.kind === "seed") ??
+    chronologicalAssets[0];
+  const remixAssets = chronologicalAssets.filter(
+    (asset) => asset.id !== originalAsset?.id
+  );
+
+  if (remixAssets.length < rotationSize) {
+    return originalAsset
+      ? [originalAsset, ...remixAssets].slice(0, rotationSize)
+      : remixAssets.slice(0, rotationSize);
+  }
+
+  return remixAssets.slice(-rotationSize);
+}
+
+export function getNextPlaybackRotationAsset<
+  Asset extends PlaybackRotationAsset
+>(assets: Asset[], currentAssetId: string | null | undefined, rotationSize = 5) {
+  const rotation = getChronologicalPlaybackRotation(assets, rotationSize);
+
+  if (rotation.length <= 1) {
+    return null;
+  }
+
+  const currentIndex = rotation.findIndex(
+    (asset) => asset.id === currentAssetId
+  );
+
+  if (currentIndex < 0) {
+    return rotation[0] ?? null;
+  }
+
+  return rotation[(currentIndex + 1) % rotation.length] ?? null;
+}
 
 export function getIntroducedPlaybackAssetIds(
   assets: PlaybackIntroductionAsset[],
@@ -142,6 +209,28 @@ export function shouldAdvancePlaybackAtVideoEnd({
   nextAssetReady: boolean;
 }) {
   return activeSlotEnded && !audioSyncConnected && nextAssetReady;
+}
+
+export function shouldHandoffPreparedPlaybackAtBoundary({
+  isMonitor,
+  audioSyncConnected,
+  candidateAssetId,
+  authorizedAssetId
+}: {
+  isMonitor: boolean;
+  audioSyncConnected: boolean;
+  candidateAssetId: string | null;
+  authorizedAssetId: string | null;
+}) {
+  if (!candidateAssetId) {
+    return false;
+  }
+
+  return (
+    isMonitor ||
+    !audioSyncConnected ||
+    authorizedAssetId === candidateAssetId
+  );
 }
 
 export function getStandbyVideoSlot(activeSlot: VideoSlotIndex): VideoSlotIndex {

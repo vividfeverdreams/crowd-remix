@@ -231,21 +231,31 @@ describe("sessionPrefillSchema", () => {
 });
 
 describe("publicSubmissionSchema", () => {
-  it("accepts a detailed visual idea longer than the old 240-character limit", () => {
-    const prompt = `Shift the whole visual world into a moonlit paper city with slow lanterns and soft shadows. ${"Add layered texture and gentle movement. ".repeat(6)}`;
+  it("accepts a catalog statement and tied response selection", () => {
     const result = publicSubmissionSchema.safeParse({
-      prompt,
+      templateId: "choice-style",
+      responseId: "choice-style-1-1",
       senderLabel: "Neon Shark",
       participantToken: "device-token-1234567890"
     });
 
-    expect(prompt.length).toBeGreaterThan(240);
     expect(result.success).toBe(true);
   });
 
-  it("still limits excessively long audience requests", () => {
+  it("accepts an image statement without a response id", () => {
     const result = publicSubmissionSchema.safeParse({
-      prompt: "x".repeat(601),
+      templateId: "image-environment",
+      responseId: "",
+      senderLabel: "Neon Shark",
+      participantToken: "device-token-1234567890"
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("does not accept an arbitrary free-text prompt in place of a catalog id", () => {
+    const result = publicSubmissionSchema.safeParse({
+      prompt: "Make the water glow",
       senderLabel: "Neon Shark",
       participantToken: "device-token-1234567890"
     });
@@ -256,14 +266,16 @@ describe("publicSubmissionSchema", () => {
   it("requires a screen-safe nickname and persistent device token", () => {
     expect(
       publicSubmissionSchema.safeParse({
-        prompt: "Make the water glow",
+        templateId: "choice-style",
+        responseId: "choice-style-1-1",
         senderLabel: "Neon Shark",
         participantToken: "device-token-1234567890"
       }).success
     ).toBe(true);
     expect(
       publicSubmissionSchema.safeParse({
-        prompt: "Make the water glow",
+        templateId: "choice-style",
+        responseId: "choice-style-1-1",
         senderLabel: "<script>",
         participantToken: "short"
       }).success
