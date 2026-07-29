@@ -487,11 +487,20 @@ export async function completePlaybackTransition(sessionId: string, expectedNext
     return null;
   }
 
-  await recordAuditEvent({
-    type: "playback.transitioned",
-    summary: "Crossfaded to the queued visual asset",
-    sessionId
-  });
+  try {
+    await recordAuditEvent({
+      type: "playback.transitioned",
+      summary: "Crossfaded to the queued visual asset",
+      sessionId
+    });
+  } catch (error) {
+    console.error("[playback-transition] audit logging failed", {
+      sessionId,
+      transitionedAssetId: result.transitionedAssetId,
+      failureReason:
+        error instanceof Error ? error.message : "Unknown audit logging error"
+    });
+  }
 
   console.info("[playback-transition] promoted live asset", {
     sessionId,

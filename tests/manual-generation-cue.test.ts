@@ -194,6 +194,31 @@ describe("playback transition target", () => {
     });
   });
 
+  it("keeps a committed transition successful when audit logging fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.findPlayback.mockResolvedValue({
+      id: "playback-1",
+      currentAssetId: "asset-live",
+      nextAssetId: "asset-remix"
+    });
+    mocks.recordAuditEvent.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    await expect(
+      completePlaybackTransition("session-1", "asset-remix")
+    ).resolves.toBe(true);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[playback-transition] audit logging failed",
+      {
+        sessionId: "session-1",
+        transitionedAssetId: "asset-remix",
+        failureReason: "audit unavailable"
+      }
+    );
+
+    errorSpy.mockRestore();
+  });
+
   it("ignores a duplicate request after another screen advanced the queue", async () => {
     mocks.findPlayback.mockResolvedValue({
       id: "playback-1",

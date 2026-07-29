@@ -572,7 +572,6 @@ export function DashboardShell({
 
             <div className="aspect-video bg-black">
               <iframe
-                key={`${playback?.currentAsset?.id ?? "holding"}-${playback?.nextAsset?.id ?? "none"}`}
                 src={`${showLink}?monitor=1`}
                 title="Live show monitor"
                 className="h-full w-full border-0"

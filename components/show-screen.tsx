@@ -6,9 +6,12 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
+  getIntroducedPlaybackAssetIds,
   getPlaybackAttribution,
   getStandbyVideoSlot,
   isVideoSlotVisible,
+  shouldShowPlaybackIntroduction,
+  shouldStartAutomaticPlaybackTransition,
   shouldAdvancePlaybackAtVideoEnd,
   type VideoSlotIndex,
   getTypewriterChunkSize
@@ -38,6 +41,7 @@ type PlayableQueuedAsset = {
   id: string;
   promptText: string;
   publicUrl: string | null;
+  status: string;
   sourceSubmission: {
     rawText: string;
     sender: string | null;
@@ -85,6 +89,15 @@ export function ShowScreen({
   const initialPlaybackAsset = initialSnapshot.session.playbackState?.currentAsset ?? null;
   const initialPlaybackUrl = resolvePlaybackUrl(initialPlaybackAsset?.publicUrl ?? null);
   const initialPlaybackAttribution = getPlaybackAttribution(initialPlaybackAsset);
+  const introducedAssetIdsRef = useRef<Set<string> | null>(null);
+
+  if (introducedAssetIdsRef.current === null) {
+    introducedAssetIdsRef.current = getIntroducedPlaybackAssetIds(
+      initialSnapshot.session.visualAssets,
+      initialPlaybackAsset?.id
+    );
+  }
+
   const [videoSlots, setVideoSlots] = useState<VideoSlots>(() => [
     initialPlaybackAsset?.id && initialPlaybackUrl
       ? {
@@ -99,6 +112,11 @@ export function ShowScreen({
   const [crossfadingToSlot, setCrossfadingToSlot] = useState<VideoSlotIndex | null>(null);
   const [handledNextAssetId, setHandledNextAssetId] = useState<string | null>(null);
   const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
+  const [pendingDirectTransition, setPendingDirectTransition] =
+    useState<QueuedTransition | null>(null);
+  const [pendingSnapshotTransition, setPendingSnapshotTransition] =
+    useState<QueuedTransition | null>(null);
+  const [reconciliationEpoch, setReconciliationEpoch] = useState(0);
   const [promptExiting, setPromptExiting] = useState(false);
   const [submissionUrl, setSubmissionUrl] = useState("");
   const visualTargetRef = useRef<HTMLDivElement>(null);
@@ -110,12 +128,25 @@ export function ShowScreen({
   const transitionTimerRef = useRef<number | null>(null);
   const promptExitTimerRef = useRef<number | null>(null);
   const transitionInFlightRef = useRef(false);
+  const startedTransitionAssetIdRef = useRef<string | null>(null);
+  const transitionRequestAbortRef = useRef<AbortController | null>(null);
+  const currentAssetIdRef = useRef<string | null>(null);
+  const reconciledTransitionAssetIdRef = useRef<string | null>(null);
+  const reconciliationRetryTimerRef = useRef<number | null>(null);
+  const reconciliationFailureRef = useRef<{
+    assetId: string | null;
+    attempts: number;
+  }>({
+    assetId: null,
+    attempts: 0
+  });
   const handledCueIdRef = useRef<string | null>(null);
   const handledManualTakeIdRef = useRef<string | null>(null);
 
   const session = snapshot.session;
   const playback = session.playbackState;
   const currentAsset = playback?.currentAsset ?? null;
+  const currentAssetUrl = resolvePlaybackUrl(currentAsset?.publicUrl ?? null);
   const nextAsset = playback?.nextAsset ?? null;
   const nextAssetUrl = resolvePlaybackUrl(nextAsset?.publicUrl ?? null);
   const crossfadeDurationMs = Math.max(400, Math.round((playback?.crossfadeSeconds ?? 2) * 1000));
@@ -127,6 +158,10 @@ export function ShowScreen({
     session.progressOverlayVisible,
     Boolean(nextRemixRender)
   );
+
+  useEffect(() => {
+    currentAssetIdRef.current = currentAsset?.id ?? null;
+  }, [currentAsset?.id]);
 
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
@@ -146,16 +181,104 @@ export function ShowScreen({
     []
   );
 
+  const scheduleReconciliationRetry = useCallback((assetId: string) => {
+    if (currentAssetIdRef.current !== assetId) {
+      reconciliationFailureRef.current = {
+        assetId: null,
+        attempts: 0
+      };
+      setReconciliationEpoch((current) => current + 1);
+      return;
+    }
+
+    const previousFailure = reconciliationFailureRef.current;
+    const attempts =
+      previousFailure.assetId === assetId
+        ? previousFailure.attempts + 1
+        : 1;
+
+    reconciliationFailureRef.current = {
+      assetId,
+      attempts
+    };
+
+    if (reconciliationRetryTimerRef.current !== null) {
+      window.clearTimeout(reconciliationRetryTimerRef.current);
+      reconciliationRetryTimerRef.current = null;
+    }
+
+    if (attempts >= 3) {
+      return;
+    }
+
+    reconciliationRetryTimerRef.current = window.setTimeout(() => {
+      reconciliationRetryTimerRef.current = null;
+      setReconciliationEpoch((current) => current + 1);
+    }, attempts === 1 ? 1_000 : 2_500);
+  }, []);
+
+  const startVisualCrossfade = useCallback(
+    (transition: QueuedTransition) => {
+      introducedAssetIdsRef.current?.add(transition.assetId);
+      setPromptExiting(true);
+      setCrossfadingToSlot(transition.videoSlot);
+
+      if (promptExitTimerRef.current !== null) {
+        window.clearTimeout(promptExitTimerRef.current);
+      }
+
+      promptExitTimerRef.current = window.setTimeout(() => {
+        setPromptReveal(null);
+        setPromptExiting(false);
+        promptExitTimerRef.current = null;
+      }, Math.min(650, Math.max(300, Math.round(crossfadeDurationMs * 0.35))));
+
+      if (transitionTimerRef.current !== null) {
+        window.clearTimeout(transitionTimerRef.current);
+      }
+
+      transitionTimerRef.current = window.setTimeout(() => {
+        const previousVideoSlot = activeVideoSlotRef.current;
+
+        activeVideoSlotRef.current = transition.videoSlot;
+        setActiveVideoSlot(transition.videoSlot);
+        setCrossfadingToSlot(null);
+        transitionTimerRef.current = null;
+        if (reconciledTransitionAssetIdRef.current === transition.assetId) {
+          reconciledTransitionAssetIdRef.current = null;
+        }
+        startedTransitionAssetIdRef.current = null;
+        transitionInFlightRef.current = false;
+        setReconciliationEpoch((current) => current + 1);
+
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            if (activeVideoSlotRef.current === transition.videoSlot) {
+              getVideoElement(previousVideoSlot)?.pause();
+            }
+          });
+        });
+      }, crossfadeDurationMs);
+    },
+    [crossfadeDurationMs, getVideoElement]
+  );
+
   const beginCrossfade = useCallback(
     (transition: QueuedTransition) => {
-      if (!playbackMutationsEnabled) {
+      if (
+        !playbackMutationsEnabled ||
+        startedTransitionAssetIdRef.current === transition.assetId
+      ) {
         return;
       }
+
+      startedTransitionAssetIdRef.current = transition.assetId;
 
       void (async () => {
         const incomingVideo = getVideoElement(transition.videoSlot);
 
         if (!incomingVideo || incomingVideo.dataset.assetId !== transition.assetId) {
+          startedTransitionAssetIdRef.current = null;
           transitionInFlightRef.current = false;
           promptRevealRef.current = null;
           setPromptReveal(null);
@@ -165,68 +288,72 @@ export function ShowScreen({
         try {
           await prepareVideoForCrossfade(incomingVideo);
 
+          if (incomingVideo.dataset.assetId !== transition.assetId) {
+            throw new Error("The standby video changed before the crossfade began.");
+          }
+
           console.info("[show-transition] decoded remix in persistent video slot", {
             assetId: transition.assetId,
             videoSlot: transition.videoSlot,
             readyState: incomingVideo.readyState
           });
 
-          setPromptExiting(true);
-          setCrossfadingToSlot(transition.videoSlot);
+          const requestController = new AbortController();
+          transitionRequestAbortRef.current?.abort();
+          transitionRequestAbortRef.current = requestController;
+          const requestTimeout = window.setTimeout(() => {
+            requestController.abort();
+          }, 8_000);
+          let response: Response;
 
-          if (promptExitTimerRef.current !== null) {
-            window.clearTimeout(promptExitTimerRef.current);
-          }
-
-          promptExitTimerRef.current = window.setTimeout(() => {
-            setPromptReveal(null);
-            setPromptExiting(false);
-            promptExitTimerRef.current = null;
-          }, Math.min(650, Math.max(300, Math.round(crossfadeDurationMs * 0.35))));
-
-          if (transitionTimerRef.current !== null) {
-            window.clearTimeout(transitionTimerRef.current);
-          }
-
-          const promotionRequest = fetch(`/api/sessions/${session.id}/transition`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              assetId: transition.assetId
-            })
-          });
-
-          transitionTimerRef.current = window.setTimeout(() => {
-            const previousVideoSlot = activeVideoSlotRef.current;
-
-            activeVideoSlotRef.current = transition.videoSlot;
-            setActiveVideoSlot(transition.videoSlot);
-            setCrossfadingToSlot(null);
-            transitionTimerRef.current = null;
-
-            window.requestAnimationFrame(() => {
-              window.requestAnimationFrame(() => {
-                if (activeVideoSlotRef.current === transition.videoSlot) {
-                  getVideoElement(previousVideoSlot)?.pause();
-                }
-              });
+          try {
+            response = await fetch(`/api/sessions/${session.id}/transition`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                assetId: transition.assetId
+              }),
+              signal: requestController.signal
             });
-          }, crossfadeDurationMs);
+          } finally {
+            window.clearTimeout(requestTimeout);
 
-          const response = await promotionRequest;
+            if (transitionRequestAbortRef.current === requestController) {
+              transitionRequestAbortRef.current = null;
+            }
+          }
 
-          if (!response.ok) {
+          const result = (await response.json().catch(() => null)) as {
+            transitioned?: boolean;
+          } | null;
+
+          if (!response.ok || !result?.transitioned) {
             throw new Error("The transition endpoint rejected the cutover.");
           }
 
+          await prepareVideoForCrossfade(incomingVideo);
+
+          if (incomingVideo.dataset.assetId !== transition.assetId) {
+            throw new Error(
+              "The standby video changed while confirming the server cutover."
+            );
+          }
+
           setHandledNextAssetId(transition.assetId);
+          startVisualCrossfade(transition);
         } catch (error) {
           console.error("[show-transition] persistent-slot crossfade failed", {
             assetId: transition.assetId,
             error: error instanceof Error ? error.message : String(error)
           });
+
+          incomingVideo.pause();
+
+          if (incomingVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+            incomingVideo.currentTime = 0;
+          }
 
           if (transitionTimerRef.current !== null) {
             window.clearTimeout(transitionTimerRef.current);
@@ -237,11 +364,13 @@ export function ShowScreen({
           setPromptReveal(null);
           setPromptExiting(false);
           setCrossfadingToSlot(null);
+          startedTransitionAssetIdRef.current = null;
           transitionInFlightRef.current = false;
+          setReconciliationEpoch((current) => current + 1);
         }
       })();
     },
-    [crossfadeDurationMs, getVideoElement, playbackMutationsEnabled, session.id]
+    [getVideoElement, playbackMutationsEnabled, session.id, startVisualCrossfade]
   );
 
   const finishPromptReveal = useCallback(() => {
@@ -281,9 +410,12 @@ export function ShowScreen({
       videoSlot: getStandbyVideoSlot(activeVideoSlotRef.current)
     };
     const attribution = getPlaybackAttribution(asset);
+    const shouldShowIntroduction = shouldShowPlaybackIntroduction(
+      asset,
+      introducedAssetIdsRef.current ?? new Set()
+    );
 
     transitionInFlightRef.current = true;
-    promptRevealRef.current = transition;
     setPromptExiting(false);
     setVideoSlots((current) => {
       const nextSlots: VideoSlots = [...current];
@@ -294,11 +426,244 @@ export function ShowScreen({
       };
       return nextSlots;
     });
-    setPromptReveal(transition);
+
+    if (shouldShowIntroduction) {
+      setPendingDirectTransition(null);
+      promptRevealRef.current = transition;
+      setPromptReveal(transition);
+    } else {
+      promptRevealRef.current = null;
+      setPromptReveal(null);
+      setPendingDirectTransition(transition);
+    }
+
     return true;
   }, [handledNextAssetId, playbackMutationsEnabled]);
 
   const takeNext = useCallback(() => takeAsset(nextAsset), [nextAsset, takeAsset]);
+
+  useEffect(() => {
+    if (!pendingDirectTransition) {
+      return;
+    }
+
+    const standbyAsset =
+      videoSlots[pendingDirectTransition.videoSlot];
+
+    if (standbyAsset?.assetId !== pendingDirectTransition.assetId) {
+      return;
+    }
+
+    setPendingDirectTransition(null);
+    beginCrossfade(pendingDirectTransition);
+  }, [beginCrossfade, pendingDirectTransition, videoSlots]);
+
+  useEffect(() => {
+    const activeAssetId = videoSlots[activeVideoSlot]?.assetId;
+
+    if (!currentAsset?.id || !currentAssetUrl) {
+      return;
+    }
+
+    if (
+      reconciliationFailureRef.current.assetId &&
+      reconciliationFailureRef.current.assetId !== currentAsset.id
+    ) {
+      if (reconciliationRetryTimerRef.current !== null) {
+        window.clearTimeout(reconciliationRetryTimerRef.current);
+        reconciliationRetryTimerRef.current = null;
+      }
+
+      reconciliationFailureRef.current = {
+        assetId: null,
+        attempts: 0
+      };
+    }
+
+    if (
+      reconciliationFailureRef.current.assetId === currentAsset.id &&
+      (reconciliationFailureRef.current.attempts >= 3 ||
+        reconciliationRetryTimerRef.current !== null)
+    ) {
+      return;
+    }
+
+    if (
+      handledNextAssetId ||
+      transitionInFlightRef.current ||
+      currentAsset.id === activeAssetId
+    ) {
+      return;
+    }
+
+    const transition: QueuedTransition = {
+      assetId: currentAsset.id,
+      nickname:
+        currentAsset.sourceSubmission?.source === "web"
+          ? currentAsset.sourceSubmission.sender?.trim() || null
+          : null,
+      promptText: getAudienceFacingRemixPrompt(
+        currentAsset.sourceSubmission?.rawText
+      ),
+      referenceImageUrl:
+        currentAsset.sourceSubmission?.referenceImageUrl ?? null,
+      videoSlot: getStandbyVideoSlot(activeVideoSlotRef.current)
+    };
+    const attribution = getPlaybackAttribution(currentAsset);
+
+    transitionInFlightRef.current = true;
+    startedTransitionAssetIdRef.current = transition.assetId;
+    promptRevealRef.current = null;
+    setPromptReveal(null);
+    setPromptExiting(false);
+    setPendingDirectTransition(null);
+    setVideoSlots((current) => {
+      const nextSlots: VideoSlots = [...current];
+      nextSlots[transition.videoSlot] = {
+        assetId: transition.assetId,
+        url: currentAssetUrl,
+        ...attribution
+      };
+      return nextSlots;
+    });
+    setPendingSnapshotTransition(transition);
+  }, [
+    activeVideoSlot,
+    currentAsset,
+    currentAssetUrl,
+    handledNextAssetId,
+    reconciliationEpoch,
+    videoSlots
+  ]);
+
+  useEffect(() => {
+    if (!pendingSnapshotTransition) {
+      return;
+    }
+
+    const standbyAsset = videoSlots[pendingSnapshotTransition.videoSlot];
+
+    if (standbyAsset?.assetId !== pendingSnapshotTransition.assetId) {
+      return;
+    }
+
+    setPendingSnapshotTransition(null);
+
+    void (async () => {
+      const incomingVideo = getVideoElement(pendingSnapshotTransition.videoSlot);
+
+      if (
+        !incomingVideo ||
+        incomingVideo.dataset.assetId !== pendingSnapshotTransition.assetId
+      ) {
+        startedTransitionAssetIdRef.current = null;
+        transitionInFlightRef.current = false;
+        scheduleReconciliationRetry(pendingSnapshotTransition.assetId);
+        return;
+      }
+
+      try {
+        await prepareVideoForCrossfade(incomingVideo);
+
+        if (incomingVideo.dataset.assetId !== pendingSnapshotTransition.assetId) {
+          throw new Error(
+            "The server-selected standby video changed before the crossfade began."
+          );
+        }
+
+        if (currentAssetIdRef.current !== pendingSnapshotTransition.assetId) {
+          throw new Error(
+            "A newer server-selected video superseded the decoded standby video."
+          );
+        }
+
+        console.info("[show-transition] reconciled server playback in persistent slot", {
+          assetId: pendingSnapshotTransition.assetId,
+          videoSlot: pendingSnapshotTransition.videoSlot,
+          readyState: incomingVideo.readyState
+        });
+        reconciliationFailureRef.current = {
+          assetId: null,
+          attempts: 0
+        };
+        reconciledTransitionAssetIdRef.current =
+          pendingSnapshotTransition.assetId;
+        startVisualCrossfade(pendingSnapshotTransition);
+      } catch (error) {
+        console.error("[show-transition] server playback reconciliation failed", {
+          assetId: pendingSnapshotTransition.assetId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        incomingVideo.pause();
+
+        if (incomingVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          incomingVideo.currentTime = 0;
+        }
+
+        startedTransitionAssetIdRef.current = null;
+        reconciledTransitionAssetIdRef.current = null;
+        transitionInFlightRef.current = false;
+        setCrossfadingToSlot(null);
+        scheduleReconciliationRetry(pendingSnapshotTransition.assetId);
+      }
+    })();
+  }, [
+    getVideoElement,
+    pendingSnapshotTransition,
+    scheduleReconciliationRetry,
+    startVisualCrossfade,
+    videoSlots
+  ]);
+
+  useEffect(() => {
+    const reconciledAssetId = reconciledTransitionAssetIdRef.current;
+
+    if (
+      !reconciledAssetId ||
+      !currentAsset?.id ||
+      currentAsset.id === reconciledAssetId
+    ) {
+      return;
+    }
+
+    if (transitionTimerRef.current !== null) {
+      window.clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+
+    if (promptExitTimerRef.current !== null) {
+      window.clearTimeout(promptExitTimerRef.current);
+      promptExitTimerRef.current = null;
+    }
+
+    const reconciledVideoSlot = videoSlots.findIndex(
+      (slot) => slot?.assetId === reconciledAssetId
+    );
+
+    if (reconciledVideoSlot === 0 || reconciledVideoSlot === 1) {
+      const reconciledVideo = getVideoElement(reconciledVideoSlot);
+      reconciledVideo?.pause();
+
+      if (
+        reconciledVideo &&
+        reconciledVideo.readyState >= HTMLMediaElement.HAVE_METADATA
+      ) {
+        reconciledVideo.currentTime = 0;
+      }
+    }
+
+    setPromptExiting(false);
+    setCrossfadingToSlot(null);
+    reconciledTransitionAssetIdRef.current = null;
+    startedTransitionAssetIdRef.current = null;
+    transitionInFlightRef.current = false;
+    scheduleReconciliationRetry(reconciledAssetId);
+  }, [
+    currentAsset?.id,
+    getVideoElement,
+    scheduleReconciliationRetry,
+    videoSlots
+  ]);
 
   useEffect(() => {
     const activeAssetId = videoSlots[activeVideoSlot]?.assetId;
@@ -317,6 +682,7 @@ export function ShowScreen({
       videoSlot: activeVideoSlot
     });
     setHandledNextAssetId(null);
+    startedTransitionAssetIdRef.current = null;
     transitionInFlightRef.current = false;
   }, [
     activeVideoSlot,
@@ -400,7 +766,15 @@ export function ShowScreen({
         window.clearTimeout(promptExitTimerRef.current);
       }
 
+      if (reconciliationRetryTimerRef.current !== null) {
+        window.clearTimeout(reconciliationRetryTimerRef.current);
+      }
+
+      transitionRequestAbortRef.current?.abort();
+      transitionRequestAbortRef.current = null;
       promptRevealRef.current = null;
+      reconciledTransitionAssetIdRef.current = null;
+      startedTransitionAssetIdRef.current = null;
     };
   }, []);
 
@@ -438,33 +812,27 @@ export function ShowScreen({
                   willChange: "opacity"
                 }}
                 src={slot.url}
-                autoPlay
+                autoPlay={isActive}
+                loop
                 muted
                 playsInline
                 preload="auto"
-                onEnded={(event) => {
+                onTimeUpdate={(event) => {
                   const video = event.currentTarget;
 
                   if (
-                    shouldAdvanceShowPlaybackAtVideoEnd({
+                    shouldStartAutomaticPlaybackTransition({
                       isMonitor,
-                      activeSlotEnded: activeVideoSlotRef.current === videoSlot,
+                      activeSlot: activeVideoSlotRef.current === videoSlot,
                       audioSyncConnected: audioSync.connected,
-                      nextAssetReady: Boolean(nextAsset?.id && nextAssetUrl)
+                      nextAssetReady: Boolean(nextAsset?.id && nextAssetUrl),
+                      transitionInFlight: transitionInFlightRef.current,
+                      currentTime: video.currentTime,
+                      duration: video.duration
                     })
                   ) {
                     takeNext();
                   }
-
-                  video.currentTime = 0;
-                  void video.play().catch((error) => {
-                    console.warn("[show-video] could not restart ended video", {
-                      assetId: slot.assetId,
-                      videoSlot,
-                      reason:
-                        error instanceof Error ? error.message : String(error)
-                    });
-                  });
                 }}
                 onError={(event) => {
                   console.error("[show-video] media element failed", {
@@ -792,12 +1160,55 @@ function resolvePlaybackUrl(url: string | null) {
 }
 
 async function prepareVideoForCrossfade(video: HTMLVideoElement) {
+  video.pause();
+
   if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
     await waitForVideoEvent(video, ["loadeddata", "canplay"], 15_000);
   }
 
+  await seekVideoToStart(video);
   await video.play();
   await waitForDecodedVideoFrame(video);
+}
+
+function seekVideoToStart(video: HTMLVideoElement) {
+  if (video.currentTime <= 0.01) {
+    video.currentTime = 0;
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.removeEventListener("seeked", handleSeeked);
+      video.removeEventListener("error", handleError);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const handleSeeked = () => finish(resolve);
+    const handleError = () =>
+      finish(() => reject(new Error("The browser could not seek the remix video.")));
+    const timeout = window.setTimeout(() => {
+      finish(() => reject(new Error("Timed out resetting the remix video.")));
+    }, 2_000);
+
+    video.addEventListener("seeked", handleSeeked, {
+      once: true
+    });
+    video.addEventListener("error", handleError, {
+      once: true
+    });
+    video.currentTime = 0;
+  });
 }
 
 function waitForVideoEvent(
@@ -846,28 +1257,80 @@ function waitForVideoEvent(
 
 function waitForDecodedVideoFrame(video: HTMLVideoElement) {
   if (typeof video.requestVideoFrameCallback === "function") {
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       let settled = false;
-      const finish = () => {
+      let callbackId: number | null = null;
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        video.removeEventListener("error", handleError);
+      };
+      const finish = (callback: () => void) => {
         if (settled) {
           return;
         }
 
         settled = true;
-        window.clearTimeout(timeout);
-        resolve();
+        cleanup();
+        callback();
       };
-      const callbackId = video.requestVideoFrameCallback(finish);
+      const handleError = () =>
+        finish(() => reject(new Error("The browser could not decode a remix frame.")));
       const timeout = window.setTimeout(() => {
-        video.cancelVideoFrameCallback(callbackId);
-        finish();
+        if (callbackId !== null) {
+          video.cancelVideoFrameCallback(callbackId);
+        }
+
+        finish(() => reject(new Error("Timed out waiting for a decoded remix frame.")));
       }, 3_000);
+
+      video.addEventListener("error", handleError, {
+        once: true
+      });
+      callbackId = video.requestVideoFrameCallback(() => finish(resolve));
     });
   }
 
-  return new Promise<void>((resolve) => {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => resolve());
+  return new Promise<void>((resolve, reject) => {
+    const initialTime = video.currentTime;
+    let settled = false;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.removeEventListener("playing", handleProgress);
+      video.removeEventListener("timeupdate", handleProgress);
+      video.removeEventListener("error", handleError);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const handleProgress = () => {
+      const playbackAdvanced =
+        video.currentTime > initialTime + 0.01 ||
+        video.currentTime < initialTime;
+
+      if (
+        playbackAdvanced &&
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        finish(resolve);
+      }
+    };
+    const handleError = () =>
+      finish(() => reject(new Error("The browser could not decode a remix frame.")));
+    const timeout = window.setTimeout(() => {
+      finish(() => reject(new Error("Timed out waiting for remix playback to advance.")));
+    }, 3_000);
+
+    video.addEventListener("playing", handleProgress);
+    video.addEventListener("timeupdate", handleProgress);
+    video.addEventListener("error", handleError, {
+      once: true
     });
+    handleProgress();
   });
 }

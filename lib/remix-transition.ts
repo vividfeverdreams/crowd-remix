@@ -1,6 +1,86 @@
 export type AutomaticCueDecision = "ignore" | "wait-for-remix" | "take-remix";
 export type VideoSlotIndex = 0 | 1;
 
+type PlaybackIntroductionAsset = {
+  id: string;
+  status?: string | null;
+} | null;
+
+const automaticPlaybackTransitionLeadSeconds = 0.5;
+
+export function getIntroducedPlaybackAssetIds(
+  assets: PlaybackIntroductionAsset[],
+  currentAssetId?: string | null
+) {
+  const introducedAssetIds = new Set<string>();
+
+  if (currentAssetId) {
+    introducedAssetIds.add(currentAssetId);
+  }
+
+  for (const asset of assets) {
+    if (asset?.id && (asset.status === "live" || asset.status === "archived")) {
+      introducedAssetIds.add(asset.id);
+    }
+  }
+
+  return introducedAssetIds;
+}
+
+export function shouldShowPlaybackIntroduction(
+  asset: {
+    id: string;
+    status?: string | null;
+  },
+  introducedAssetIds: ReadonlySet<string>
+) {
+  return Boolean(
+    asset.id &&
+      asset.status === "ready" &&
+      !introducedAssetIds.has(asset.id)
+  );
+}
+
+export function shouldStartAutomaticPlaybackTransition({
+  isMonitor,
+  activeSlot,
+  audioSyncConnected,
+  nextAssetReady,
+  transitionInFlight,
+  currentTime,
+  duration
+}: {
+  isMonitor: boolean;
+  activeSlot: boolean;
+  audioSyncConnected: boolean;
+  nextAssetReady: boolean;
+  transitionInFlight: boolean;
+  currentTime: number;
+  duration: number;
+}) {
+  if (
+    isMonitor ||
+    !activeSlot ||
+    audioSyncConnected ||
+    !nextAssetReady ||
+    transitionInFlight
+  ) {
+    return false;
+  }
+
+  if (
+    !Number.isFinite(currentTime) ||
+    !Number.isFinite(duration) ||
+    currentTime < 0 ||
+    duration <= 0 ||
+    currentTime > duration
+  ) {
+    return false;
+  }
+
+  return duration - currentTime <= automaticPlaybackTransitionLeadSeconds;
+}
+
 export function decideAutomaticCueTransition({
   autoTakeOnCue,
   nextAssetReady

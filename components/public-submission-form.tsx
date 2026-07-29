@@ -286,7 +286,7 @@ export function PublicSubmissionForm({
       </p>
       <form onSubmit={handleSubmit} className="mt-5 space-y-4">
         <label className="block">
-          <span className="mb-2 block text-base font-medium text-white/88">Your remix nickname</span>
+          <span className="mb-2 block text-base font-medium text-white/88">Your Nickname</span>
           <input
             required
             type="text"
@@ -306,9 +306,6 @@ export function PublicSubmissionForm({
             className="w-full rounded-full border border-white/10 bg-black/30 px-4 py-3 outline-none transition focus:border-plasma disabled:cursor-not-allowed disabled:opacity-60"
             placeholder="Pick a name for the screen"
           />
-          <span className="mt-2 block text-xs leading-5 text-white/42">
-            Saved only in this browser—no password, email, or login.
-          </span>
         </label>
 
         <label className="block">

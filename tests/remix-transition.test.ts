@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
+  getIntroducedPlaybackAssetIds,
   getPlaybackAttribution,
   getStandbyVideoSlot,
   isVideoSlotVisible,
   shouldAdvancePlaybackAtVideoEnd,
+  shouldShowPlaybackIntroduction,
+  shouldStartAutomaticPlaybackTransition,
   getTypewriterChunkSize
 } from "@/lib/remix-transition";
 
@@ -104,6 +107,206 @@ describe("remix transition cues", () => {
       promptText: "Original session visual"
     });
   });
+
+  it("seeds introduced IDs from played assets and the current asset", () => {
+    const introducedAssetIds = getIntroducedPlaybackAssetIds(
+      [
+        {
+          id: "asset-ready",
+          status: "ready"
+        },
+        {
+          id: "asset-live",
+          status: "live"
+        },
+        {
+          id: "asset-archived",
+          status: "archived"
+        },
+        {
+          id: "asset-processing",
+          status: "processing"
+        },
+        null
+      ],
+      "asset-current"
+    );
+
+    expect([...introducedAssetIds].sort()).toEqual([
+      "asset-archived",
+      "asset-current",
+      "asset-live"
+    ]);
+  });
+
+  it("shows a ready asset introduction once and skips played rotation assets", () => {
+    const introducedAssetIds = new Set(["asset-seen"]);
+
+    expect(
+      shouldShowPlaybackIntroduction(
+        {
+          id: "asset-new",
+          status: "ready"
+        },
+        introducedAssetIds
+      )
+    ).toBe(true);
+
+    introducedAssetIds.add("asset-new");
+
+    expect(
+      shouldShowPlaybackIntroduction(
+        {
+          id: "asset-new",
+          status: "ready"
+        },
+        introducedAssetIds
+      )
+    ).toBe(false);
+    expect(
+      shouldShowPlaybackIntroduction(
+        {
+          id: "asset-live",
+          status: "live"
+        },
+        introducedAssetIds
+      )
+    ).toBe(false);
+    expect(
+      shouldShowPlaybackIntroduction(
+        {
+          id: "asset-archived",
+          status: "archived"
+        },
+        introducedAssetIds
+      )
+    ).toBe(false);
+  });
+
+  it.each([
+    {
+      duration: 4,
+      beforeLeadTime: 3.49,
+      atLeadTime: 3.5
+    },
+    {
+      duration: 6,
+      beforeLeadTime: 5.49,
+      atLeadTime: 5.5
+    },
+    {
+      duration: 8,
+      beforeLeadTime: 7.49,
+      atLeadTime: 7.5
+    }
+  ])(
+    "begins the automatic transition within the final half-second of a $duration-second video",
+    ({ duration, beforeLeadTime, atLeadTime }) => {
+      const baseInput = {
+        isMonitor: false,
+        activeSlot: true,
+        audioSyncConnected: false,
+        nextAssetReady: true,
+        transitionInFlight: false,
+        duration
+      };
+
+      expect(
+        shouldStartAutomaticPlaybackTransition({
+          ...baseInput,
+          currentTime: beforeLeadTime
+        })
+      ).toBe(false);
+      expect(
+        shouldStartAutomaticPlaybackTransition({
+          ...baseInput,
+          currentTime: atLeadTime
+        })
+      ).toBe(true);
+    }
+  );
+
+  it("gates automatic near-end transitions on playback state", () => {
+    const baseInput = {
+      isMonitor: false,
+      activeSlot: true,
+      audioSyncConnected: false,
+      nextAssetReady: true,
+      transitionInFlight: false,
+      currentTime: 7.75,
+      duration: 8
+    };
+
+    expect(shouldStartAutomaticPlaybackTransition(baseInput)).toBe(true);
+    expect(
+      shouldStartAutomaticPlaybackTransition({
+        ...baseInput,
+        isMonitor: true
+      })
+    ).toBe(false);
+    expect(
+      shouldStartAutomaticPlaybackTransition({
+        ...baseInput,
+        activeSlot: false
+      })
+    ).toBe(false);
+    expect(
+      shouldStartAutomaticPlaybackTransition({
+        ...baseInput,
+        audioSyncConnected: true
+      })
+    ).toBe(false);
+    expect(
+      shouldStartAutomaticPlaybackTransition({
+        ...baseInput,
+        nextAssetReady: false
+      })
+    ).toBe(false);
+    expect(
+      shouldStartAutomaticPlaybackTransition({
+        ...baseInput,
+        transitionInFlight: true
+      })
+    ).toBe(false);
+  });
+
+  it.each([
+    {
+      currentTime: Number.NaN,
+      duration: 8
+    },
+    {
+      currentTime: 7,
+      duration: Number.POSITIVE_INFINITY
+    },
+    {
+      currentTime: 0,
+      duration: 0
+    },
+    {
+      currentTime: -0.1,
+      duration: 8
+    },
+    {
+      currentTime: 8.1,
+      duration: 8
+    }
+  ])(
+    "rejects invalid media timing %#",
+    ({ currentTime, duration }) => {
+      expect(
+        shouldStartAutomaticPlaybackTransition({
+          isMonitor: false,
+          activeSlot: true,
+          audioSyncConnected: false,
+          nextAssetReady: true,
+          transitionInFlight: false,
+          currentTime,
+          duration
+        })
+      ).toBe(false);
+    }
+  );
 
   it("keeps a decoded video slot visible across the logical handoff", () => {
     const incomingSlot = getStandbyVideoSlot(0);
