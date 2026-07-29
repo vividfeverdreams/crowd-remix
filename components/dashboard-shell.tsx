@@ -21,6 +21,61 @@ type DashboardShellProps = {
   audioSyncRelayToken: string;
 };
 
+type InitialGenerationJob = {
+  status: string;
+  failureReason: string | null;
+};
+
+export function getInitialGenerationPresentation(input: {
+  sessionStatus: string;
+  hasCurrentAsset: boolean;
+  isStarting: boolean;
+  seedJob?: InitialGenerationJob;
+}) {
+  if (input.hasCurrentAsset || (!input.isStarting && input.sessionStatus !== "live")) {
+    return {
+      visible: false,
+      failed: false,
+      failureReason: null
+    };
+  }
+
+  if (input.isStarting) {
+    return {
+      visible: true,
+      failed: false,
+      failureReason: null
+    };
+  }
+
+  if (input.seedJob?.status === "queued" || input.seedJob?.status === "in_progress") {
+    return {
+      visible: true,
+      failed: false,
+      failureReason: null
+    };
+  }
+
+  if (input.seedJob?.status === "failed") {
+    return {
+      visible: true,
+      failed: true,
+      failureReason:
+        input.seedJob.failureReason ||
+        "Gemini Omni could not finish the first video. Retry the generation."
+    };
+  }
+
+  return {
+    visible: true,
+    failed: true,
+    failureReason:
+      input.seedJob?.status === "completed"
+        ? "The first video finished, but it did not enter live playback. Retry the generation."
+        : "The first video job could not be created. Retry the generation."
+  };
+}
+
 export function DashboardShell({
   initialSnapshot,
   currentUserName,
@@ -68,9 +123,16 @@ export function DashboardShell({
   const playback = session.playbackState;
   const publicLink = getAccountRemixPath(session.userId);
   const showLink = `/show/${session.id}`;
-  const canStartSession = session.status !== "live";
   const seedRender = session.renderJobs.find((job: any) => job.mode === "seed");
   const isStartingInitialRender = workingAction === "start-session";
+  const initialGenerationPresentation = getInitialGenerationPresentation({
+    sessionStatus: session.status,
+    hasCurrentAsset: Boolean(playback?.currentAsset),
+    isStarting: isStartingInitialRender,
+    seedJob: seedRender
+  });
+  const canStartSession =
+    session.status !== "live" || initialGenerationPresentation.failed;
   const previousGenerations = session.visualAssets.filter(
     (asset) => asset.id !== playback?.currentAsset?.id
   );
@@ -87,13 +149,6 @@ export function DashboardShell({
       ? activeRenderJob.status.replace("_", " ")
       : `${renderProgress[activeRenderJob.id]}%`
     : `${session.renderJobs.length} recent`;
-  const showInitialGeneration =
-    !playback?.currentAsset &&
-    (isStartingInitialRender ||
-      (session.status === "live" &&
-        Boolean(seedRender) &&
-        ["queued", "in_progress", "failed"].includes(seedRender?.status ?? "")));
-
   useEffect(() => {
     if (!deferredSnapshot.queueHealth.waitingOnRender) {
       return;
@@ -266,9 +321,12 @@ export function DashboardShell({
         const response = await fetch(`/api/sessions/${session.id}/start`, {
           method: "POST"
         });
+        const payload = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
 
         if (!response.ok) {
-          throw new Error("Could not start the session.");
+          throw new Error(payload?.error ?? "Could not start the session.");
         }
       } else if (action === "logout") {
         const response = await fetch("/api/auth/logout", {
@@ -499,11 +557,13 @@ export function DashboardShell({
         </div>
       </header>
 
-      {showInitialGeneration ? (
+      {initialGenerationPresentation.visible ? (
         <InitialGenerationStatus
           job={seedRender}
           progress={seedRender ? renderProgress[seedRender.id] : undefined}
           isStarting={isStartingInitialRender}
+          failed={initialGenerationPresentation.failed}
+          failureReason={initialGenerationPresentation.failureReason}
         />
       ) : null}
 
@@ -621,7 +681,9 @@ export function DashboardShell({
                 >
                   {workingAction === "start-session"
                     ? "Starting..."
-                    : session.status === "stopped"
+                    : session.status === "live"
+                      ? "Retry First Video"
+                      : session.status === "stopped"
                       ? "Restart Session"
                       : "Start Session"}
                 </button>
@@ -1025,6 +1087,11 @@ export function DashboardShell({
                       <GenerationProgressBar progress={renderProgress[job.id]} compact />
                     ) : null}
                     <p className="mt-3 text-sm leading-6 text-white/68">{job.promptText}</p>
+                    {job.status === "failed" && job.failureReason ? (
+                      <p className="mt-3 text-sm leading-6 text-ember">
+                        {job.failureReason}
+                      </p>
+                    ) : null}
                   </div>
                 ))
               )}
@@ -1055,16 +1122,16 @@ export function DashboardShell({
 function InitialGenerationStatus({
   job,
   progress,
-  isStarting
+  isStarting,
+  failed,
+  failureReason
 }: {
-  job?: {
-    status: string;
-    failureReason: string | null;
-  };
+  job?: InitialGenerationJob;
   progress?: number;
   isStarting: boolean;
+  failed: boolean;
+  failureReason: string | null;
 }) {
-  const failed = job?.status === "failed";
   const hasMeasuredProgress = !isStarting && typeof progress === "number";
   const title = failed ? "First video generation failed" : "Generating your first video";
   const stage = isStarting
@@ -1098,7 +1165,8 @@ function InitialGenerationStatus({
             <h2 className="mt-3 text-2xl font-semibold text-white">{title}</h2>
             <p className="mt-2 max-w-2xl text-sm leading-7 text-white/70">
               {failed
-                ? job?.failureReason || "Gemini Omni could not finish this render. Try restarting the session to queue it again."
+                ? failureReason ||
+                  "Gemini Omni could not finish this render. Retry the generation."
                 : `${stage} You can keep this dashboard open; the first video will load automatically when it is ready.`}
             </p>
           </div>

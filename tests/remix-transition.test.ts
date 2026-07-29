@@ -6,6 +6,7 @@ import {
   getIntroducedPlaybackAssetIds,
   getNextPlaybackRotationAsset,
   getPlaybackAttribution,
+  getRenderableVideoSlots,
   getStandbyVideoSlot,
   isVideoSlotVisible,
   shouldAdvancePlaybackAtVideoEnd,
@@ -397,6 +398,36 @@ describe("remix transition cues", () => {
         })
       )
     ).toEqual([false, true]);
+  });
+
+  it("hydrates a first video that becomes current after the show has opened", () => {
+    const firstVideo = {
+      assetId: "seed-1"
+    };
+
+    expect(getRenderableVideoSlots([null, null], 0, firstVideo)).toEqual([
+      firstVideo,
+      null
+    ]);
+    expect(getRenderableVideoSlots([null, null], 1, firstVideo)).toEqual([
+      null,
+      firstVideo
+    ]);
+  });
+
+  it("does not overwrite an active video while snapshots update", () => {
+    const activeVideo = {
+      assetId: "active-1"
+    };
+    const serverCurrentVideo = {
+      assetId: "server-current"
+    };
+    const slots: [
+      typeof activeVideo | null,
+      typeof activeVideo | null
+    ] = [activeVideo, null];
+
+    expect(getRenderableVideoSlots(slots, 0, serverCurrentVideo)).toBe(slots);
   });
 
   it("advances the rotation only when the active video ends with a next clip ready", () => {

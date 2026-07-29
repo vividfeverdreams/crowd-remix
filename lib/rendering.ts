@@ -146,6 +146,8 @@ function getGeminiRecoveryTimeoutMs(renderJob: {
     : staleGeminiRenderMs;
 }
 
+const remoteMediaDownloadTimeoutMs = 8_000;
+
 function isRetryableGeminiReconciliationError(error: unknown) {
   if (isVideoModerationError(error)) {
     return false;
@@ -1304,7 +1306,9 @@ function extractVideoFromStreamEvent(event: GeminiInteractionStreamEvent) {
 }
 
 async function fetchRemoteMedia(url: string, fallbackMimeType: string, label: string) {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(remoteMediaDownloadTimeoutMs)
+  });
 
   if (!response.ok) {
     throw new Error(`Could not download the ${label} for Gemini Omni (${response.status}).`);

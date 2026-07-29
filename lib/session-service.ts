@@ -43,6 +43,9 @@ type SessionInput = {
   submissionRateLimitCount: number;
 };
 
+export const initialGenerationQueueFailureMessage =
+  "The first video could not be queued. Retry the generation.";
+
 export async function createDjSession(userId: string, input: SessionInput) {
   const code = createSessionCode(`${input.artistName}-${input.trackName}`);
 
@@ -143,7 +146,103 @@ export async function startDjSession(sessionId: string, userId: string) {
   });
 
   if (!session.playbackState?.currentAssetId && session.renderJobs.length === 0) {
-    await queueAutomatedRender(session.id, null, "seed", session.basePrompt);
+    const queuedRender = await queueAutomatedRender(
+      session.id,
+      null,
+      "seed",
+      session.basePrompt
+    );
+
+    if (!queuedRender) {
+      const generationState = await db.dJSession.findUnique({
+        where: {
+          id: session.id
+        },
+        select: {
+          playbackState: {
+            select: {
+              currentAssetId: true
+            }
+          },
+          renderJobs: {
+            where: {
+              mode: "seed",
+              OR: [
+                {
+                  status: {
+                    in: ["queued", "in_progress"]
+                  }
+                },
+                {
+                  updatedAt: {
+                    gte: session.startedAt ?? new Date(0)
+                  }
+                }
+              ]
+            },
+            select: {
+              id: true
+            },
+            take: 1
+          },
+          visualAssets: {
+            where: {
+              status: "ready",
+              publicUrl: {
+                not: null
+              }
+            },
+            orderBy: [
+              {
+                createdAt: "asc"
+              },
+              {
+                id: "asc"
+              }
+            ],
+            select: {
+              id: true
+            },
+            take: 1
+          }
+        }
+      });
+      const readyAssetId = generationState?.visualAssets[0]?.id ?? null;
+      let recoveredReadyAsset = false;
+
+      if (
+        generationState &&
+        !generationState.playbackState?.currentAssetId &&
+        readyAssetId
+      ) {
+        recoveredReadyAsset = await adoptReadyInitialAsset(
+          session.id,
+          readyAssetId
+        );
+
+        if (!recoveredReadyAsset) {
+          const latestPlayback = await db.playbackState.findUnique({
+            where: {
+              sessionId: session.id
+            },
+            select: {
+              currentAssetId: true
+            }
+          });
+
+          recoveredReadyAsset = Boolean(latestPlayback?.currentAssetId);
+        }
+      }
+
+      if (
+        !generationState ||
+        (!generationState.playbackState?.currentAssetId &&
+          generationState.renderJobs.length === 0 &&
+          !recoveredReadyAsset)
+      ) {
+        throw new Error(initialGenerationQueueFailureMessage);
+      }
+    }
   }
 
   await recordAuditEvent({
@@ -154,6 +253,37 @@ export async function startDjSession(sessionId: string, userId: string) {
   });
 
   return session;
+}
+
+async function adoptReadyInitialAsset(sessionId: string, assetId: string) {
+  return db.$transaction(async (tx: any) => {
+    const claim = await tx.playbackState.updateMany({
+      where: {
+        sessionId,
+        currentAssetId: null
+      },
+      data: {
+        currentAssetId: assetId,
+        status: "live",
+        lastTransitionAt: new Date()
+      }
+    });
+
+    if (claim.count !== 1) {
+      return false;
+    }
+
+    await tx.visualAsset.update({
+      where: {
+        id: assetId
+      },
+      data: {
+        status: "live"
+      }
+    });
+
+    return true;
+  });
 }
 
 export async function stopDjSession(sessionId: string, userId: string) {

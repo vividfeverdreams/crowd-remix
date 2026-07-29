@@ -237,6 +237,20 @@ export function getStandbyVideoSlot(activeSlot: VideoSlotIndex): VideoSlotIndex 
   return activeSlot === 0 ? 1 : 0;
 }
 
+export function getRenderableVideoSlots<Slot>(
+  videoSlots: [Slot | null, Slot | null],
+  activeSlot: VideoSlotIndex,
+  currentAssetSlot: Slot | null
+): [Slot | null, Slot | null] {
+  if (videoSlots[activeSlot] || !currentAssetSlot) {
+    return videoSlots;
+  }
+
+  return activeSlot === 0
+    ? [currentAssetSlot, videoSlots[1]]
+    : [videoSlots[0], currentAssetSlot];
+}
+
 export function isVideoSlotVisible({
   slot,
   activeSlot,

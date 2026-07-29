@@ -153,8 +153,11 @@ describe("Gemini Omni video requests", () => {
       "https://generativelanguage.googleapis.com/v1beta/interactions"
     );
 
+    const referenceRequest = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const request = fetchMock.mock.calls[1]?.[1] as RequestInit;
 
+    expect(referenceRequest.signal).toBeInstanceOf(AbortSignal);
+    expect(request.signal).toBeInstanceOf(AbortSignal);
     expect(request).toEqual(
       expect.objectContaining({
         method: "POST",

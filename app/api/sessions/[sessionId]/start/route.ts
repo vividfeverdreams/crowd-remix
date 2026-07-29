@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { startDjSession } from "@/lib/session-service";
+import {
+  initialGenerationQueueFailureMessage,
+  startDjSession
+} from "@/lib/session-service";
 
 export const maxDuration = 60;
 
@@ -11,24 +14,52 @@ type StartRouteProps = {
 };
 
 export async function POST(_request: Request, { params }: StartRouteProps) {
-  const user = await getCurrentUser();
+  const { sessionId } = await params;
 
-  if (!user) {
+  try {
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return NextResponse.json(
+        {
+          error: "Unauthorized"
+        },
+        {
+          status: 401
+        }
+      );
+    }
+
+    const session = await startDjSession(sessionId, user.id);
+
+    console.info("[session-start] completed", {
+      sessionId,
+      status: session.status
+    });
+
+    return NextResponse.json({
+      id: session.id,
+      status: session.status
+    });
+  } catch (error) {
+    const failureReason =
+      error instanceof Error ? error.message : "Unknown session start error";
+
+    console.error("[session-start] failed", {
+      sessionId,
+      failureReason
+    });
+
     return NextResponse.json(
       {
-        error: "Unauthorized"
+        error:
+          failureReason === initialGenerationQueueFailureMessage
+            ? initialGenerationQueueFailureMessage
+            : "Could not start the session. Retry in a moment."
       },
       {
-        status: 401
+        status: 500
       }
     );
   }
-
-  const { sessionId } = await params;
-  const session = await startDjSession(sessionId, user.id);
-
-  return NextResponse.json({
-    id: session.id,
-    status: session.status
-  });
 }

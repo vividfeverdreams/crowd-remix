@@ -10,6 +10,7 @@ import {
   getIntroducedPlaybackAssetIds,
   getNextPlaybackRotationAsset,
   getPlaybackAttribution,
+  getRenderableVideoSlots,
   getStandbyVideoSlot,
   shouldShowPlaybackIntroduction,
   shouldAdvancePlaybackAtVideoEnd,
@@ -119,6 +120,7 @@ export function ShowScreen({
   const [authorizedBoundaryAssetId, setAuthorizedBoundaryAssetId] =
     useState<string | null>(null);
   const [submissionUrl, setSubmissionUrl] = useState("");
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const visualTargetRef = useRef<HTMLDivElement>(null);
   const wordmarkTargetRef = useRef<HTMLDivElement>(null);
   const firstVideoSlotRef = useRef<HTMLVideoElement>(null);
@@ -142,6 +144,11 @@ export function ShowScreen({
   const playback = session.playbackState;
   const currentAsset = playback?.currentAsset ?? null;
   const nextAsset = playback?.nextAsset ?? null;
+  const renderableVideoSlots = getRenderableVideoSlots(
+    videoSlots,
+    activeVideoSlot,
+    createVideoSlot(currentAsset)
+  );
   const nextRemixRender = session.renderJobs.find(
     (job) => job.status === "queued" || job.status === "in_progress"
   );
@@ -150,7 +157,7 @@ export function ShowScreen({
     session.progressOverlayVisible,
     Boolean(nextRemixRender)
   );
-  const activeAssetId = videoSlots[activeVideoSlot]?.assetId ?? null;
+  const activeAssetId = renderableVideoSlots[activeVideoSlot]?.assetId ?? null;
   const playableAssets = session.visualAssets.filter(
     (asset): asset is PlayableQueuedAsset => Boolean(asset?.id && asset.publicUrl)
   );
@@ -593,6 +600,7 @@ export function ShowScreen({
           setAuthorizedBoundaryAssetId(null);
           setActiveVideoSlot(transition.videoSlot);
           setStandbyTransition(null);
+          setPlaybackError(null);
           setRequestedAssetId((current) =>
             current === transition.assetId ? null : current
           );
@@ -637,11 +645,11 @@ export function ShowScreen({
   return (
     <main className="relative min-h-screen cursor-none overflow-hidden bg-black">
       <div ref={visualTargetRef} className="absolute inset-0 overflow-hidden">
-        {!videoSlots.some(Boolean) ? (
+        {!renderableVideoSlots.some(Boolean) ? (
           <div className="absolute inset-0 subtle-grid bg-aurora" />
         ) : null}
 
-        {videoSlots.map((slot, index) => {
+        {renderableVideoSlots.map((slot, index) => {
           if (!slot) {
             return null;
           }
@@ -670,11 +678,24 @@ export function ShowScreen({
                   handleVideoBoundary(videoSlot, event.currentTarget);
                 }}
                 onError={(event) => {
+                  const mediaErrorCode = event.currentTarget.error?.code ?? null;
+
                   console.error("[show-video] media element failed", {
                     assetId: slot.assetId,
                     videoSlot,
-                    mediaErrorCode: event.currentTarget.error?.code ?? null
+                    mediaErrorCode
                   });
+
+                  if (activeVideoSlotRef.current === videoSlot) {
+                    setPlaybackError(
+                      "The current video could not be played. Refresh this show window to retry it."
+                    );
+                  }
+                }}
+                onCanPlay={() => {
+                  if (activeVideoSlotRef.current === videoSlot) {
+                    setPlaybackError(null);
+                  }
                 }}
                 onWaiting={() => {
                   if (activeVideoSlotRef.current === videoSlot) {
@@ -709,6 +730,18 @@ export function ShowScreen({
       </div>
 
       <div className="pointer-events-none absolute inset-0 z-20 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.1),transparent_30%),linear-gradient(180deg,transparent_55%,rgba(0,0,0,0.45)_100%)]" />
+
+      {playbackError ? (
+        <aside
+          role="alert"
+          className="pointer-events-none absolute left-1/2 top-1/2 z-50 w-[min(38rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-ember/40 bg-black/85 p-6 text-center shadow-2xl backdrop-blur-xl"
+        >
+          <p className="font-mono text-xs uppercase tracking-[0.28em] text-ember">
+            Video playback failed
+          </p>
+          <p className="mt-3 text-base leading-7 text-white/85">{playbackError}</p>
+        </aside>
+      ) : null}
 
       <WordmarkOverlay
         targetRef={wordmarkTargetRef}
