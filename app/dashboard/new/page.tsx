@@ -10,9 +10,9 @@ export default async function NewSessionPage() {
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.3em] text-plasma">DREAM SEQUENCE</p>
-          <h1 className="mt-4 text-4xl font-semibold text-white">Set up a new live session.</h1>
+          <h1 className="mt-4 text-4xl font-semibold text-white">Turn an idea into a live session.</h1>
           <p className="mt-3 max-w-2xl text-base leading-7 text-white/70">
-            Define the visual DNA for this show, then let SMS and QR prompts remix inside those boundaries.
+            Describe the show in your own words. AI will build an editable first draft of its visual DNA before anything is saved.
           </p>
         </div>
 

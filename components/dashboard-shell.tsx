@@ -1,62 +1,138 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { DashboardAudioSync } from "@/components/dashboard-audio-sync";
+import { DashboardDisclosure } from "@/components/dashboard-disclosure";
 import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
+import type { GoogleConnectionStatus } from "@/lib/google-key-store";
+import { getAccountRemixPath } from "@/lib/remix-links";
+import { normalizeVideoProgress } from "@/lib/render-progress";
 import type { SessionSnapshot } from "@/lib/snapshot";
+import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { formatRelativeTime } from "@/lib/utils";
 
 type DashboardShellProps = {
   initialSnapshot: NonNullable<SessionSnapshot>;
   currentUserName: string;
   initialOpenAiStatus: OpenAiConnectionStatus;
+  initialGoogleStatus: GoogleConnectionStatus;
+  audioSyncRelayToken: string;
 };
 
 export function DashboardShell({
   initialSnapshot,
   currentUserName,
-  initialOpenAiStatus
+  initialOpenAiStatus,
+  initialGoogleStatus,
+  audioSyncRelayToken
 }: DashboardShellProps) {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const snapshot = useSessionSnapshot(initialSnapshot);
   const [workingAction, setWorkingAction] = useState<string | null>(null);
   const [controlFeedback, setControlFeedback] = useState<string | null>(null);
   const [showWindowFeedback, setShowWindowFeedback] = useState<string | null>(null);
   const [showUrlDisplay, setShowUrlDisplay] = useState("");
   const [confirmingClear, setConfirmingClear] = useState(false);
+  const [renderProgress, setRenderProgress] = useState<Record<string, number>>({});
+  const [pendingQrOverlayVisibility, setPendingQrOverlayVisibility] = useState<boolean | null>(null);
+  const [pendingWordmarkOverlayVisibility, setPendingWordmarkOverlayVisibility] = useState<boolean | null>(
+    null
+  );
+  const [pendingWordmarkOpacity, setPendingWordmarkOpacity] = useState<number | null>(null);
+  const [pendingWordmarkSize, setPendingWordmarkSize] = useState<number | null>(null);
+  const [pendingWordmarkAudioReactiveOnly, setPendingWordmarkAudioReactiveOnly] = useState<
+    boolean | null
+  >(null);
+  const [pendingProgressOverlayVisibility, setPendingProgressOverlayVisibility] = useState<
+    boolean | null
+  >(null);
+  const generationMenuRef = useRef<HTMLDetailsElement>(null);
+  const submittedWordmarkOpacityRef = useRef(initialSnapshot.session.wordmarkOpacity);
+  const submittedWordmarkSizeRef = useRef(initialSnapshot.session.wordmarkSize);
   const deferredSnapshot = useDeferredValue(snapshot);
   const openAiStatus = initialOpenAiStatus;
+  const googleStatus = initialGoogleStatus;
 
   const session = deferredSnapshot.session;
+  const qrOverlayVisible = pendingQrOverlayVisibility ?? session.qrOverlayVisible;
+  const wordmarkOverlayVisible =
+    pendingWordmarkOverlayVisibility ?? session.wordmarkOverlayVisible;
+  const wordmarkOpacity = pendingWordmarkOpacity ?? session.wordmarkOpacity;
+  const wordmarkSize = pendingWordmarkSize ?? session.wordmarkSize;
+  const wordmarkAudioReactiveOnly =
+    pendingWordmarkAudioReactiveOnly ?? session.wordmarkAudioReactiveOnly;
+  const progressOverlayVisible =
+    pendingProgressOverlayVisibility ?? session.progressOverlayVisible;
   const playback = session.playbackState;
-  const publicLink = `/r/${session.code}`;
+  const publicLink = getAccountRemixPath(session.userId);
   const showLink = `/show/${session.id}`;
   const canStartSession = session.status !== "live";
-
-  useEffect(() => {
-    const stream = new EventSource(`/api/sessions/${session.id}/stream`);
-
-    stream.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as NonNullable<SessionSnapshot>;
-      startTransition(() => {
-        setSnapshot(payload);
-      });
-    };
-
-    return () => {
-      stream.close();
-    };
-  }, [session.id]);
+  const seedRender = session.renderJobs.find((job: any) => job.mode === "seed");
+  const isStartingInitialRender = workingAction === "start-session";
+  const previousGenerations = session.visualAssets.filter(
+    (asset) => asset.id !== playback?.currentAsset?.id
+  );
+  const activeRenderJob = session.renderJobs.find(
+    (job: any) => job.status === "queued" || job.status === "in_progress"
+  );
+  const enabledOverlayCount = [
+    qrOverlayVisible,
+    wordmarkOverlayVisible,
+    progressOverlayVisible
+  ].filter(Boolean).length;
+  const renderJobsStatus = activeRenderJob
+    ? renderProgress[activeRenderJob.id] === undefined
+      ? activeRenderJob.status.replace("_", " ")
+      : `${renderProgress[activeRenderJob.id]}%`
+    : `${session.renderJobs.length} recent`;
+  const showInitialGeneration =
+    !playback?.currentAsset &&
+    (isStartingInitialRender ||
+      (session.status === "live" &&
+        Boolean(seedRender) &&
+        ["queued", "in_progress", "failed"].includes(seedRender?.status ?? "")));
 
   useEffect(() => {
     if (!deferredSnapshot.queueHealth.waitingOnRender) {
       return;
     }
 
-    const interval = window.setInterval(() => {
-      void fetch(`/api/sessions/${session.id}/reconcile`, {
+    const reconcile = async () => {
+      const response = await fetch(`/api/sessions/${session.id}/reconcile`, {
         method: "POST"
       });
-    }, 15000);
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        jobs?: Array<{
+          id: string;
+          progress: number | null;
+        }>;
+      };
+
+      if (!payload.jobs?.length) {
+        return;
+      }
+
+      setRenderProgress((current) => {
+        const next = { ...current };
+
+        for (const job of payload.jobs ?? []) {
+          if (typeof job.progress === "number") {
+            next[job.id] = normalizeVideoProgress(job.progress, current[job.id]);
+          }
+        }
+
+        return next;
+      });
+    };
+
+    void reconcile();
+    const interval = window.setInterval(() => void reconcile(), 10000);
 
     return () => {
       window.clearInterval(interval);
@@ -66,6 +142,48 @@ export function DashboardShell({
   useEffect(() => {
     setShowUrlDisplay(resolveAbsoluteUrl(showLink));
   }, [showLink]);
+
+  useEffect(() => {
+    if (pendingQrOverlayVisibility === session.qrOverlayVisible) {
+      setPendingQrOverlayVisibility(null);
+    }
+  }, [pendingQrOverlayVisibility, session.qrOverlayVisible]);
+
+  useEffect(() => {
+    if (pendingWordmarkOverlayVisibility === session.wordmarkOverlayVisible) {
+      setPendingWordmarkOverlayVisibility(null);
+    }
+  }, [pendingWordmarkOverlayVisibility, session.wordmarkOverlayVisible]);
+
+  useEffect(() => {
+    if (pendingWordmarkOpacity === session.wordmarkOpacity) {
+      submittedWordmarkOpacityRef.current = session.wordmarkOpacity;
+      setPendingWordmarkOpacity(null);
+    } else if (pendingWordmarkOpacity === null) {
+      submittedWordmarkOpacityRef.current = session.wordmarkOpacity;
+    }
+  }, [pendingWordmarkOpacity, session.wordmarkOpacity]);
+
+  useEffect(() => {
+    if (pendingWordmarkSize === session.wordmarkSize) {
+      submittedWordmarkSizeRef.current = session.wordmarkSize;
+      setPendingWordmarkSize(null);
+    } else if (pendingWordmarkSize === null) {
+      submittedWordmarkSizeRef.current = session.wordmarkSize;
+    }
+  }, [pendingWordmarkSize, session.wordmarkSize]);
+
+  useEffect(() => {
+    if (pendingWordmarkAudioReactiveOnly === session.wordmarkAudioReactiveOnly) {
+      setPendingWordmarkAudioReactiveOnly(null);
+    }
+  }, [pendingWordmarkAudioReactiveOnly, session.wordmarkAudioReactiveOnly]);
+
+  useEffect(() => {
+    if (pendingProgressOverlayVisibility === session.progressOverlayVisible) {
+      setPendingProgressOverlayVisibility(null);
+    }
+  }, [pendingProgressOverlayVisibility, session.progressOverlayVisible]);
 
   useEffect(() => {
     if (!confirmingClear) {
@@ -110,18 +228,18 @@ export function DashboardShell({
     }
   }
 
-  async function runControlAction(action: string) {
+  async function runControlAction(action: string, value?: boolean | number, assetId?: string) {
     if (action === "skip-next" && !snapshot.session.playbackState?.nextAsset) {
       setControlFeedback(
         snapshot.queueHealth.waitingOnRender
           ? "Skip To Next is waiting on a ready loop. A remix is still rendering right now."
           : "Skip To Next only works when a ready next loop is loaded."
       );
-      return;
+      return false;
     }
 
     setControlFeedback(null);
-    setWorkingAction(action);
+    setWorkingAction(action === "cue-generation" && assetId ? `${action}:${assetId}` : action);
 
     try {
       if (action === "start-session") {
@@ -142,7 +260,7 @@ export function DashboardShell({
         }
 
         window.location.href = "/login";
-        return;
+        return true;
       } else {
         const response = await fetch(`/api/sessions/${session.id}/control`, {
           method: "POST",
@@ -150,7 +268,9 @@ export function DashboardShell({
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            action
+            action,
+            value,
+            assetId
           })
         });
 
@@ -165,17 +285,118 @@ export function DashboardShell({
         setControlFeedback("Switched the live output to the queued remix.");
       } else if (action === "fallback-remix") {
         setControlFeedback("Fallback remix queued. The show stays on the current loop until the new render is ready.");
+      } else if (action === "cue-generation") {
+        setControlFeedback("Previous generation cued. Showing its original user prompt and crossfading it into the live output now.");
       } else if (action === "pause-selection") {
         setControlFeedback("Automated crowd selection is paused.");
       } else if (action === "resume-selection") {
         setControlFeedback("Automated crowd selection resumed.");
       } else if (action === "stop-session") {
         setControlFeedback("Session stopped. Audience intake is offline until you restart it.");
+      } else if (action === "set-qr-overlay") {
+        setControlFeedback(value ? "Audience QR is now on the live output." : "Audience QR is now hidden.");
+      } else if (action === "set-wordmark-overlay") {
+        setControlFeedback(value ? "Wordmark is now centered on the live output." : "Wordmark is now hidden.");
+      } else if (action === "set-wordmark-opacity") {
+        setControlFeedback(`Wordmark opacity saved at ${Math.round(Number(value) * 100)}%.`);
+      } else if (action === "set-wordmark-size") {
+        setControlFeedback(`Wordmark size saved at ${Math.round(Number(value) * 100)}%.`);
+      } else if (action === "set-wordmark-audio-reactive-only") {
+        setControlFeedback(
+          value
+            ? "Audio-reactive VFX now affect only the wordmark layer."
+            : "Audio-reactive VFX now affect the generated visuals."
+        );
+      } else if (action === "set-progress-overlay") {
+        setControlFeedback(
+          value
+            ? "Next-remix progress is now visible on the live output."
+            : "Next-remix progress is now hidden."
+        );
       }
+
+      return true;
     } catch (error) {
       setControlFeedback(describeDashboardRequestError(error, "That dashboard action"));
+      return false;
     } finally {
       setWorkingAction(null);
+    }
+  }
+
+  async function updateQrOverlayVisibility(visible: boolean) {
+    setPendingQrOverlayVisibility(visible);
+
+    const succeeded = await runControlAction("set-qr-overlay", visible);
+
+    if (!succeeded) {
+      setPendingQrOverlayVisibility(null);
+    }
+  }
+
+  async function updateWordmarkOverlayVisibility(visible: boolean) {
+    setPendingWordmarkOverlayVisibility(visible);
+
+    const succeeded = await runControlAction("set-wordmark-overlay", visible);
+
+    if (!succeeded) {
+      setPendingWordmarkOverlayVisibility(null);
+    }
+  }
+
+  async function commitWordmarkOpacity(opacity: number) {
+    const normalizedOpacity = Math.round(Math.max(0, Math.min(1, opacity)) * 100) / 100;
+
+    if (normalizedOpacity === submittedWordmarkOpacityRef.current) {
+      return;
+    }
+
+    submittedWordmarkOpacityRef.current = normalizedOpacity;
+    setPendingWordmarkOpacity(normalizedOpacity);
+
+    const succeeded = await runControlAction("set-wordmark-opacity", normalizedOpacity);
+
+    if (!succeeded) {
+      submittedWordmarkOpacityRef.current = session.wordmarkOpacity;
+      setPendingWordmarkOpacity(null);
+    }
+  }
+
+  async function commitWordmarkSize(size: number) {
+    const normalizedSize = Math.round(Math.max(0.3, Math.min(1.5, size)) * 100) / 100;
+
+    if (normalizedSize === submittedWordmarkSizeRef.current) {
+      return;
+    }
+
+    submittedWordmarkSizeRef.current = normalizedSize;
+    setPendingWordmarkSize(normalizedSize);
+
+    const succeeded = await runControlAction("set-wordmark-size", normalizedSize);
+
+    if (!succeeded) {
+      submittedWordmarkSizeRef.current = session.wordmarkSize;
+      setPendingWordmarkSize(null);
+    }
+  }
+
+  async function updateWordmarkAudioReactiveOnly(wordmarkOnly: boolean) {
+    setPendingWordmarkAudioReactiveOnly(wordmarkOnly);
+
+    const succeeded = await runControlAction("set-wordmark-audio-reactive-only", wordmarkOnly);
+
+    if (!succeeded) {
+      setPendingWordmarkAudioReactiveOnly(null);
+    }
+  }
+
+  async function updateProgressOverlayVisibility(visible: boolean) {
+    setPendingProgressOverlayVisibility(visible);
+
+    const succeeded = await runControlAction("set-progress-overlay", visible);
+
+    if (!succeeded) {
+      setPendingProgressOverlayVisibility(null);
     }
   }
 
@@ -226,7 +447,12 @@ export function DashboardShell({
           >
             Pop Out Show
           </button>
-          <Link href={showLink} className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10">
+          <Link
+            href={showLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10"
+          >
             Fullscreen Show
           </Link>
           <button
@@ -253,6 +479,14 @@ export function DashboardShell({
         </div>
       </header>
 
+      {showInitialGeneration ? (
+        <InitialGenerationStatus
+          job={seedRender}
+          progress={seedRender ? renderProgress[seedRender.id] : undefined}
+          isStarting={isStartingInitialRender}
+        />
+      ) : null}
+
       <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Session Status" value={session.status} hint={playback?.status ?? "idle"} />
         <MetricCard label="Approved Queue" value={String(deferredSnapshot.queueHealth.approvedCount)} hint="scored safe prompts" />
@@ -276,7 +510,7 @@ export function DashboardShell({
         </section>
       ) : null}
 
-      {!openAiStatus.configured || session.status !== "live" ? (
+      {!googleStatus.configured || session.status !== "live" ? (
         <section className="mt-6 grid gap-4 lg:grid-cols-2">
           {session.status !== "live" ? (
             <StatusNotice
@@ -289,14 +523,22 @@ export function DashboardShell({
             />
           ) : null}
 
-          {!openAiStatus.configured ? (
+          {!googleStatus.configured ? (
             <StatusNotice
               title="Demo Mode Active"
-              body="No OPENAI_API_KEY environment variable is active right now, so the app is using the demo loop fallback instead of real Sora generation."
+              body="No GEMINI_API_KEY environment variable is active right now, so the app is using the demo loop fallback instead of Gemini Omni video generation."
             />
           ) : null}
         </section>
       ) : null}
+
+      <section className="mt-8">
+        <DashboardAudioSync
+          sessionId={session.id}
+          nextReady={Boolean(playback?.nextAsset?.id && playback.nextAsset.publicUrl)}
+          relayToken={audioSyncRelayToken}
+        />
+      </section>
 
       <section className="mt-8 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
         <div className="space-y-6">
@@ -324,14 +566,13 @@ export function DashboardShell({
             <div className="border-b border-white/10 px-6 py-5">
               <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Live Monitor</p>
               <p className="mt-3 text-sm text-white/68">
-                Keep an eye on the show here while you test controls. This avoids the extra-tab weirdness from the in-app browser.
+                This visual-only preview mirrors the audio-reactive effects. All input, cue, and transition controls stay on this dashboard.
               </p>
             </div>
 
             <div className="aspect-video bg-black">
               <iframe
-                key={`${playback?.currentAsset?.id ?? "holding"}-${playback?.nextAsset?.id ?? "none"}`}
-                src={showLink}
+                src={`${showLink}?monitor=1`}
                 title="Live show monitor"
                 className="h-full w-full border-0"
                 allow="autoplay; fullscreen"
@@ -339,16 +580,21 @@ export function DashboardShell({
             </div>
           </div>
 
-          <div className="panel p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Live Controls</p>
-                <p className="mt-3 text-sm text-white/68">
-                  Keep the floor safe, pause automation if needed, and trigger a backup remix when the queue gets weird.
-                </p>
-              </div>
-
-              {canStartSession ? (
+          <DashboardDisclosure
+            eyebrow="Show operation"
+            title="Live Controls"
+            description="Pause automation, take a ready remix, trigger a fallback, or adjust the show overlays."
+            status={
+              session.status === "live"
+                ? session.autoSelectEnabled
+                  ? "Live · Auto"
+                  : "Live · Paused"
+                : session.status
+            }
+            statusActive={session.status === "live"}
+          >
+            {canStartSession ? (
+              <div className="flex justify-end">
                 <button
                   onClick={() => void runControlAction("start-session")}
                   className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:opacity-90"
@@ -359,10 +605,10 @@ export function DashboardShell({
                       ? "Restart Session"
                       : "Start Session"}
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
 
-            <div className="mt-6 flex flex-wrap gap-3">
+            <div className={`${canStartSession ? "mt-6" : ""} flex flex-wrap gap-3`}>
               <ControlButton
                 active={workingAction === "pause-selection"}
                 label={session.autoSelectEnabled ? "Pause Selection" : "Resume Selection"}
@@ -389,17 +635,231 @@ export function DashboardShell({
                   ? "Skip To Next will unlock after the current render finishes and loads as the next loop."
                   : "No next loop is ready yet. Queue a fallback remix or wait for a crowd render to finish."}
             </p>
-          </div>
 
-          <div className="panel p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Incoming Crowd Prompts</p>
-                <h2 className="mt-3 text-2xl font-semibold text-white">Audience Requests</h2>
+            <details
+              ref={generationMenuRef}
+              className="group mt-6 rounded-4xl border border-white/10 bg-black/20 open:border-plasma/35 open:bg-plasma/[0.04]"
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-semibold text-white/88 marker:content-none">
+                <span>Previous generations</span>
+                <span className="flex items-center gap-3 text-xs font-normal text-white/48">
+                  {previousGenerations.length} available
+                  <span aria-hidden="true" className="text-plasma transition-transform group-open:rotate-180">⌄</span>
+                </span>
+              </summary>
+
+              <div className="border-t border-white/10 p-3">
+                {previousGenerations.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-white/52">Completed generations will appear here after the first remix finishes.</p>
+                ) : (
+                  <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+                    {previousGenerations.map((asset) => {
+                      const userPrompt = asset.sourceSubmission?.rawText?.trim();
+                      const isWorking = workingAction === `cue-generation:${asset.id}`;
+
+                      return (
+                        <button
+                          key={asset.id}
+                          type="button"
+                          disabled={Boolean(workingAction) || session.status !== "live"}
+                          onClick={() => {
+                            generationMenuRef.current?.removeAttribute("open");
+                            void runControlAction("cue-generation", undefined, asset.id);
+                          }}
+                          className="block w-full rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3 text-left transition hover:border-plasma/40 hover:bg-plasma/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-mono text-[10px] uppercase tracking-[0.24em] text-plasma">
+                              {userPrompt ? "User prompt" : asset.kind === "seed" ? "Initial generation" : "Fallback remix"}
+                            </span>
+                            <span className="text-xs text-white/38">{formatRelativeTime(asset.createdAt)}</span>
+                          </div>
+                          <p className="mt-2 line-clamp-2 text-sm leading-6 text-white/78">
+                            {userPrompt || (asset.kind === "seed" ? "Original session visual" : "Generated fallback visual")}
+                          </p>
+                          <p className="mt-2 text-xs text-white/42">
+                            {isWorking ? "Crossfading…" : asset.id === playback?.nextAsset?.id ? "Currently queued · click to take now" : "Click to cue and crossfade now"}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
+            </details>
 
-            <div className="mt-6 space-y-4">
+            <details className="group/overlays mt-6 overflow-hidden rounded-4xl border border-white/10 bg-white/[0.04] open:border-plasma/30">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 outline-none transition hover:bg-white/[0.035] focus-visible:bg-white/[0.05] [&::-webkit-details-marker]:hidden">
+                <div>
+                  <p className="text-sm font-semibold text-white/88">Display overlays</p>
+                  <p className="mt-1 text-xs text-white/48">
+                    QR, wordmark, audio-reactive targeting, and render progress.
+                  </p>
+                </div>
+                <span className="flex shrink-0 items-center gap-3 font-mono text-[10px] uppercase tracking-[0.18em] text-white/48">
+                  {enabledOverlayCount} visible
+                  <span
+                    aria-hidden="true"
+                    className="text-lg text-plasma transition-transform group-open/overlays:rotate-180"
+                  >
+                    ⌄
+                  </span>
+                </span>
+              </summary>
+
+              <div className="border-t border-white/10">
+                <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+                <div className="max-w-xl">
+                  <p className="text-sm font-semibold text-white/88">Audience QR overlay</p>
+                  <p className="mt-1 text-xs leading-5 text-white/52">
+                    Show a scannable link to {publicLink} on the pop-out display and live monitor.
+                  </p>
+                </div>
+
+                <label className="inline-flex h-7 w-12 shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={qrOverlayVisible}
+                    disabled={workingAction === "set-qr-overlay"}
+                    onChange={(event) => void updateQrOverlayVisibility(event.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <span className="relative h-7 w-12 rounded-full border border-white/15 bg-black/40 transition after:absolute after:left-1 after:top-1 after:h-5 after:w-5 after:rounded-full after:bg-white/65 after:transition-all after:content-[''] peer-checked:border-plasma/50 peer-checked:bg-plasma/20 peer-checked:after:translate-x-5 peer-checked:after:bg-plasma peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-plasma" />
+                  <span className="sr-only">Show audience QR code on the show output</span>
+                </label>
+                </div>
+
+              <div className="border-t border-white/10 px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="max-w-xl">
+                    <p className="text-sm font-semibold text-white/88">Centered wordmark overlay</p>
+                    <p className="mt-1 text-xs leading-5 text-white/52">
+                      Place the Vivid Fever Dreams wordmark in the center of the live output.
+                    </p>
+                  </div>
+
+                  <label className="inline-flex h-7 w-12 shrink-0 cursor-pointer items-center">
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      checked={wordmarkOverlayVisible}
+                      disabled={workingAction === "set-wordmark-overlay"}
+                      onChange={(event) => void updateWordmarkOverlayVisibility(event.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <span className="relative h-7 w-12 rounded-full border border-white/15 bg-black/40 transition after:absolute after:left-1 after:top-1 after:h-5 after:w-5 after:rounded-full after:bg-white/65 after:transition-all after:content-[''] peer-checked:border-plasma/50 peer-checked:bg-plasma/20 peer-checked:after:translate-x-5 peer-checked:after:bg-plasma peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-plasma" />
+                    <span className="sr-only">Show the centered wordmark on the show output</span>
+                  </label>
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+                  <label htmlFor="wordmark-opacity" className="text-xs font-medium text-white/62">
+                    Wordmark opacity
+                  </label>
+                  <output
+                    htmlFor="wordmark-opacity"
+                    className="font-mono text-xs tabular-nums text-plasma sm:text-right"
+                  >
+                    {Math.round(wordmarkOpacity * 100)}%
+                  </output>
+                  <input
+                    id="wordmark-opacity"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={wordmarkOpacity}
+                    aria-label="Wordmark opacity"
+                    onChange={(event) => setPendingWordmarkOpacity(Number(event.target.value))}
+                    onPointerUp={(event) => void commitWordmarkOpacity(Number(event.currentTarget.value))}
+                    onKeyUp={(event) => void commitWordmarkOpacity(Number(event.currentTarget.value))}
+                    onBlur={(event) => void commitWordmarkOpacity(Number(event.currentTarget.value))}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-plasma sm:col-span-2"
+                  />
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+                  <label htmlFor="wordmark-size" className="text-xs font-medium text-white/62">
+                    Wordmark size
+                  </label>
+                  <output
+                    htmlFor="wordmark-size"
+                    className="font-mono text-xs tabular-nums text-plasma sm:text-right"
+                  >
+                    {Math.round(wordmarkSize * 100)}%
+                  </output>
+                  <input
+                    id="wordmark-size"
+                    type="range"
+                    min="0.3"
+                    max="1.5"
+                    step="0.01"
+                    value={wordmarkSize}
+                    aria-label="Wordmark size"
+                    onChange={(event) => setPendingWordmarkSize(Number(event.target.value))}
+                    onPointerUp={(event) => void commitWordmarkSize(Number(event.currentTarget.value))}
+                    onKeyUp={(event) => void commitWordmarkSize(Number(event.currentTarget.value))}
+                    onBlur={(event) => void commitWordmarkSize(Number(event.currentTarget.value))}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-plasma sm:col-span-2"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-white/10 px-5 py-4">
+                <div className="max-w-xl">
+                  <p className="text-sm font-semibold text-white/88">Audio-reactive VFX: wordmark only</p>
+                  <p className="mt-1 text-xs leading-5 text-white/52">
+                    Keep the generated footage clean and apply the selected audio-reactive effect only to the wordmark layer.
+                  </p>
+                </div>
+
+                <label className="inline-flex h-7 w-12 shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={wordmarkAudioReactiveOnly}
+                    disabled={workingAction === "set-wordmark-audio-reactive-only"}
+                    onChange={(event) => void updateWordmarkAudioReactiveOnly(event.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <span className="relative h-7 w-12 rounded-full border border-white/15 bg-black/40 transition after:absolute after:left-1 after:top-1 after:h-5 after:w-5 after:rounded-full after:bg-white/65 after:transition-all after:content-[''] peer-checked:border-plasma/50 peer-checked:bg-plasma/20 peer-checked:after:translate-x-5 peer-checked:after:bg-plasma peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-plasma" />
+                  <span className="sr-only">Apply audio-reactive effects only to the wordmark</span>
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-white/10 px-5 py-4">
+                <div className="max-w-xl">
+                  <p className="text-sm font-semibold text-white/88">Next-remix progress overlay</p>
+                  <p className="mt-1 text-xs leading-5 text-white/52">
+                    Show “DREAM SEQUENCE” and the current Gemini Omni render activity across the top of the live visual.
+                  </p>
+                </div>
+
+                <label className="inline-flex h-7 w-12 shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={progressOverlayVisible}
+                    disabled={workingAction === "set-progress-overlay"}
+                    onChange={(event) => void updateProgressOverlayVisibility(event.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <span className="relative h-7 w-12 rounded-full border border-white/15 bg-black/40 transition after:absolute after:left-1 after:top-1 after:h-5 after:w-5 after:rounded-full after:bg-white/65 after:transition-all after:content-[''] peer-checked:border-plasma/50 peer-checked:bg-plasma/20 peer-checked:after:translate-x-5 peer-checked:after:bg-plasma peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-plasma" />
+                  <span className="sr-only">Show next-remix progress on the show output</span>
+                </label>
+              </div>
+              </div>
+            </details>
+          </DashboardDisclosure>
+
+          <DashboardDisclosure
+            eyebrow="Incoming crowd prompts"
+            title="Audience Requests"
+            description="Review the latest nicknames, raw requests, scores, and winning prompts."
+            status={`${session.submissions.length} recent`}
+          >
+            <div className="space-y-4">
               {session.submissions.length === 0 ? (
                 <EmptyState
                   title="No audience requests yet"
@@ -415,7 +875,9 @@ export function DashboardShell({
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
                         <span className="rounded-full border border-white/10 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-white/60">
-                          {submission.source}
+                          {submission.source === "web" && submission.sender
+                            ? submission.sender
+                            : submission.source}
                         </span>
                         <span className="text-xs uppercase tracking-[0.24em] text-white/40">{submission.status}</span>
                       </div>
@@ -423,6 +885,19 @@ export function DashboardShell({
                     </div>
 
                     <p className="mt-4 text-base leading-7 text-white/82">{submission.rawText}</p>
+
+                    {submission.referenceImageUrl ? (
+                      <div className="relative mt-4 aspect-[4/3] overflow-hidden rounded-3xl border border-white/10">
+                        <Image
+                          src={submission.referenceImageUrl}
+                          alt="Audience remix reference"
+                          fill
+                          unoptimized
+                          sizes="(max-width: 768px) 100vw, 480px"
+                          className="object-cover"
+                        />
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 grid gap-3 md:grid-cols-[0.35fr_1fr]">
                       <div className="rounded-3xl border border-white/8 bg-white/[0.03] px-4 py-3">
@@ -440,25 +915,39 @@ export function DashboardShell({
                 ))
               )}
             </div>
-          </div>
+          </DashboardDisclosure>
         </div>
 
         <div className="space-y-6">
-          <div className="panel p-6">
-            <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">OpenAI Environment</p>
-            <p className="mt-4 text-sm leading-7 text-white/72">
+          <DashboardDisclosure
+            eyebrow="System"
+            title="AI Environment"
+            description="Current Gemini Omni video and OpenAI text-scoring configuration."
+            status={googleStatus.configured ? "Connected" : "Demo"}
+            statusActive={googleStatus.configured}
+          >
+            <p className="text-sm leading-7 text-white/72">
+              {googleStatus.source === "env"
+                ? `Using GEMINI_API_KEY from the local environment${googleStatus.last4 ? ` ending in ${googleStatus.last4}` : ""} for Gemini Omni seed and remix video calls.`
+                : "No GEMINI_API_KEY environment variable is configured, so video rendering is using the demo fallback."}
+            </p>
+            <p className="mt-3 text-sm leading-7 text-white/60">
               {openAiStatus.source === "env"
-                ? `Using OPENAI_API_KEY from the local environment${openAiStatus.last4 ? ` ending in ${openAiStatus.last4}` : ""} for moderation and Sora calls.`
-                : "No OPENAI_API_KEY environment variable is configured yet, so the app is running in demo fallback mode."}
+                ? `OpenAI text scoring is configured${openAiStatus.last4 ? ` with a key ending in ${openAiStatus.last4}` : ""}.`
+                : "OpenAI text scoring is not configured, so moderation and ranking use the built-in fallback behavior."}
             </p>
             <div className="mt-5 rounded-3xl border border-white/10 bg-black/20 px-4 py-4 text-sm leading-7 text-white/72">
-              Set `OPENAI_API_KEY` in `.env` or your shell before starting the app. The dashboard no longer stores or edits API keys.
+              Set `GEMINI_API_KEY` for video generation and `OPENAI_API_KEY` for AI-assisted moderation, ranking, and session setup. The dashboard never stores or edits API keys.
             </div>
-          </div>
+          </DashboardDisclosure>
 
-          <div className="panel p-6">
-            <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Show Links</p>
-            <div className="mt-5 space-y-4">
+          <DashboardDisclosure
+            eyebrow="Output"
+            title="Show Links"
+            description="Open, copy, or share the projection and audience destinations."
+            status="6 links"
+          >
+            <div className="space-y-4">
               <button
                 onClick={openShowPopout}
                 className="block w-full rounded-4xl border border-white/10 bg-black/20 p-4 text-left transition hover:border-plasma/40"
@@ -487,13 +976,18 @@ export function DashboardShell({
                 <p className="mt-2 break-all font-mono text-xs text-white/60">{showUrlDisplay || showLink}</p>
               </div>
               <LinkCard label="Audience Remix Form" href={publicLink} />
-              <LinkCard label="Fullscreen Projection View" href={showLink} />
+              <LinkCard label="Fullscreen Projection View" href={showLink} newTab />
             </div>
-          </div>
+          </DashboardDisclosure>
 
-          <div className="panel p-6">
-            <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Render Jobs</p>
-            <div className="mt-5 space-y-4">
+          <DashboardDisclosure
+            eyebrow="Generation"
+            title="Render Jobs"
+            description="Inspect active Gemini Omni jobs and recent completed or failed renders."
+            status={renderJobsStatus}
+            statusActive={Boolean(activeRenderJob)}
+          >
+            <div className="space-y-4">
               {session.renderJobs.length === 0 ? (
                 <EmptyState title="No renders yet" body="Start the session to seed the first loop, then new crowd winners will appear here." />
               ) : (
@@ -501,27 +995,131 @@ export function DashboardShell({
                   <div key={job.id} className="rounded-4xl border border-white/10 bg-black/20 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold text-white">{job.mode === "seed" ? "Seed Render" : "DREAM SEQUENCE"}</p>
-                      <span className="text-xs uppercase tracking-[0.24em] text-white/40">{job.status}</span>
+                      <span className="text-xs uppercase tracking-[0.24em] text-white/40">
+                        {job.status === "queued" || job.status === "in_progress"
+                          ? `${renderProgress[job.id] === undefined ? "" : `${renderProgress[job.id]}% · `}${job.status.replace("_", " ")}`
+                          : job.status}
+                      </span>
                     </div>
+                    {job.status === "queued" || job.status === "in_progress" ? (
+                      <GenerationProgressBar progress={renderProgress[job.id]} compact />
+                    ) : null}
                     <p className="mt-3 text-sm leading-6 text-white/68">{job.promptText}</p>
                   </div>
                 ))
               )}
             </div>
-          </div>
+          </DashboardDisclosure>
 
-          <div className="panel p-6">
-            <p className="font-mono text-xs uppercase tracking-[0.3em] text-white/45">Session DNA</p>
-            <div className="mt-5 space-y-4 text-sm leading-7 text-white/74">
+          <DashboardDisclosure
+            eyebrow="Creative direction"
+            title="Session DNA"
+            description="Creative bible, allowed motifs, blocked themes, and motion rules."
+            status="4 rules"
+          >
+            <div className="space-y-4 text-sm leading-7 text-white/74">
               <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">{session.creativeBible}</div>
-              <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">Allowed motifs: {session.allowedMotifs}</div>
+              <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">
+                {session.allowedMotifs ? `Allowed motifs: ${session.allowedMotifs}` : "Allowed motifs: Off (open-ended)"}
+              </div>
               <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">Blocked themes: {session.bannedTerms}</div>
               <div className="rounded-3xl border border-white/10 bg-black/20 px-4 py-3">Motion rules: {session.motionRules}</div>
             </div>
-          </div>
+          </DashboardDisclosure>
         </div>
       </section>
     </main>
+  );
+}
+
+function InitialGenerationStatus({
+  job,
+  progress,
+  isStarting
+}: {
+  job?: {
+    status: string;
+    failureReason: string | null;
+  };
+  progress?: number;
+  isStarting: boolean;
+}) {
+  const failed = job?.status === "failed";
+  const hasMeasuredProgress = !isStarting && typeof progress === "number";
+  const title = failed ? "First video generation failed" : "Generating your first video";
+  const stage = isStarting
+    ? "Starting the generation job…"
+    : job?.status === "queued"
+      ? "Queued with Gemini Omni — waiting for rendering to begin…"
+      : "Gemini Omni is rendering your first loop…";
+
+  return (
+    <section
+      aria-live="polite"
+      aria-busy={!failed}
+      className={`panel relative mt-8 overflow-hidden border p-6 sm:p-8 ${
+        failed ? "border-ember/35 bg-ember/8" : "border-plasma/25 bg-plasma/[0.07]"
+      }`}
+    >
+      {!failed ? (
+        <div aria-hidden="true" className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-plasma/15 blur-3xl" />
+      ) : null}
+      <div className="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-4">
+          {!failed ? (
+            <span aria-hidden="true" className="mt-1 h-8 w-8 shrink-0 animate-spin rounded-full border-[3px] border-plasma/20 border-t-plasma" />
+          ) : (
+            <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ember/15 text-lg text-ember">!</span>
+          )}
+          <div>
+            <p className={`font-mono text-[11px] uppercase tracking-[0.3em] ${failed ? "text-ember" : "text-plasma"}`}>
+              Initial generation
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold text-white">{title}</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-7 text-white/70">
+              {failed
+                ? job?.failureReason || "Gemini Omni could not finish this render. Try restarting the session to queue it again."
+                : `${stage} You can keep this dashboard open; the first video will load automatically when it is ready.`}
+            </p>
+          </div>
+        </div>
+
+        {!failed ? (
+          <div className="shrink-0 text-left sm:text-right">
+            <p className="text-4xl font-semibold tabular-nums text-white">
+              {hasMeasuredProgress ? `${progress}%` : "Working"}
+            </p>
+            <p className="mt-2 text-xs uppercase tracking-[0.22em] text-white/45">
+              {hasMeasuredProgress ? "render complete" : "waiting for first update"}
+            </p>
+          </div>
+        ) : null}
+      </div>
+
+      {!failed ? <GenerationProgressBar progress={hasMeasuredProgress ? progress : undefined} /> : null}
+    </section>
+  );
+}
+
+function GenerationProgressBar({ progress, compact = false }: { progress?: number; compact?: boolean }) {
+  const hasProgress = typeof progress === "number";
+
+  return (
+    <div
+      role="progressbar"
+      aria-label="Video generation progress"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={hasProgress ? progress : undefined}
+      className={`${compact ? "mt-3 h-1.5" : "mt-7 h-2.5"} overflow-hidden rounded-full bg-black/35`}
+    >
+      <div
+        className={`h-full rounded-full bg-gradient-to-r from-tide via-plasma to-haze transition-[width] duration-700 ${
+          hasProgress ? "" : "w-1/3 animate-pulse"
+        }`}
+        style={hasProgress ? { width: `${progress}%` } : undefined}
+      />
+    </div>
   );
 }
 
@@ -580,9 +1178,14 @@ function ControlButton({
   );
 }
 
-function LinkCard({ label, href }: { label: string; href: string }) {
+function LinkCard({ label, href, newTab = false }: { label: string; href: string; newTab?: boolean }) {
   return (
-    <Link href={href} className="block rounded-4xl border border-white/10 bg-black/20 p-4 transition hover:border-plasma/40">
+    <Link
+      href={href}
+      target={newTab ? "_blank" : undefined}
+      rel={newTab ? "noopener noreferrer" : undefined}
+      className="block rounded-4xl border border-white/10 bg-black/20 p-4 transition hover:border-plasma/40"
+    >
       <p className="text-sm font-semibold text-white">{label}</p>
       <p className="mt-2 text-sm text-white/60">{href}</p>
     </Link>

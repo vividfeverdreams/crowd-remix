@@ -6,7 +6,17 @@ type RateLimitCheck = {
   reason?: string;
 };
 
-export async function checkSubmissionRateLimit(sessionId: string, senderFingerprint: string): Promise<RateLimitCheck> {
+export async function checkSubmissionRateLimit(
+  sessionId: string,
+  senderFingerprint: string,
+  submissionLimit: number | null
+): Promise<RateLimitCheck> {
+  if (submissionLimit === null) {
+    return {
+      allowed: true
+    };
+  }
+
   const tenMinutesAgo = subMinutes(new Date(), 10);
 
   const recentCount = await db.promptSubmission.count({
@@ -19,10 +29,12 @@ export async function checkSubmissionRateLimit(sessionId: string, senderFingerpr
     }
   });
 
-  if (recentCount >= 3) {
+  if (recentCount >= submissionLimit) {
+    const remixLabel = submissionLimit === 1 ? "remix" : "remixes";
+
     return {
       allowed: false,
-      reason: "That device has already sent three remixes in the last ten minutes."
+      reason: `That device has already sent ${submissionLimit} ${remixLabel} in the last ten minutes.`
     };
   }
 

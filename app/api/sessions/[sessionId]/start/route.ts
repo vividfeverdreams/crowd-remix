@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { startDjSession } from "@/lib/session-service";
 
+export const maxDuration = 60;
+
 type StartRouteProps = {
   params: Promise<{
     sessionId: string;

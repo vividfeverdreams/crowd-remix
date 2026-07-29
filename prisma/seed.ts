@@ -45,6 +45,7 @@ async function main() {
           "A looping wide cinematic abstract concert visual with mirrored architecture, chrome fog, pulse halos, and elegant nightclub motion.",
         status: "draft",
         venueSafeMode: true,
+        artistControlEnabled: true,
         autoSelectEnabled: true,
         playbackState: {
           create: {
