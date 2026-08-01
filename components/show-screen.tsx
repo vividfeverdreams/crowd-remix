@@ -1172,19 +1172,56 @@ async function playPreparedVideoAtBoundary(video: HTMLVideoElement) {
 }
 
 export async function requestVideoPlayback(
-  video: Pick<HTMLVideoElement, "paused" | "play">
+  video: Pick<
+    HTMLVideoElement,
+    "addEventListener" | "paused" | "play" | "removeEventListener"
+  >
 ) {
-  const playbackRequest = video.play();
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
 
-  // Chromium can begin advancing a hidden video while leaving the play()
-  // promise pending until it becomes visible. Once playback has started,
-  // do not let that unresolved promise block the visual slot handoff.
-  if (!video.paused) {
-    void playbackRequest.catch(() => undefined);
-    return;
-  }
+    const cleanup = () => {
+      globalThis.clearTimeout(timeout);
+      video.removeEventListener("playing", handlePlaying);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
 
-  await playbackRequest;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const handlePlaying = () => finish(resolve);
+    const timeout = globalThis.setTimeout(() => {
+      if (!video.paused) {
+        finish(resolve);
+        return;
+      }
+
+      finish(() => reject(new Error("Timed out starting remix video playback.")));
+    }, 2_000);
+
+    video.addEventListener("playing", handlePlaying, {
+      once: true
+    });
+
+    try {
+      const playbackRequest = video.play();
+
+      void playbackRequest.then(
+        () => finish(resolve),
+        (error) => finish(() => reject(error))
+      );
+
+      if (!video.paused) {
+        finish(resolve);
+      }
+    } catch (error) {
+      finish(() => reject(error));
+    }
+  });
 }
 
 async function restartVideoAtBoundary(video: HTMLVideoElement) {

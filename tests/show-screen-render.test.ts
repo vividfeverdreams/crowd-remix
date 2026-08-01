@@ -9,18 +9,22 @@ import type { SessionSnapshot } from "@/lib/snapshot";
 describe("show screen video presentation", () => {
   it("commits a handoff once hidden video playback starts even if play remains pending", async () => {
     const neverSettles = new Promise<void>(() => undefined);
-    const video = {
-      paused: true,
+    class DeferredPlaybackVideo extends EventTarget {
+      paused = true;
+
       play() {
-        this.paused = false;
+        queueMicrotask(() => {
+          this.paused = false;
+          this.dispatchEvent(new Event("playing"));
+        });
+
         return neverSettles;
       }
-    };
+    }
+    const video = new DeferredPlaybackVideo();
 
     const completed = await Promise.race([
-      requestVideoPlayback(video as Pick<HTMLVideoElement, "paused" | "play">).then(
-        () => true
-      ),
+      requestVideoPlayback(video as unknown as HTMLVideoElement).then(() => true),
       new Promise<false>((resolve) => {
         setTimeout(() => resolve(false), 100);
       })
