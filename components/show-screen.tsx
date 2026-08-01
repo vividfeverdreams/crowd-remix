@@ -122,6 +122,8 @@ export function ShowScreen({
     useState<string | null>(null);
   const [submissionUrl, setSubmissionUrl] = useState("");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
   const visualTargetRef = useRef<HTMLDivElement>(null);
   const wordmarkTargetRef = useRef<HTMLDivElement>(null);
   const firstVideoSlotRef = useRef<HTMLVideoElement>(null);
@@ -206,6 +208,28 @@ export function ShowScreen({
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
   }, [session.userId]);
+
+  useEffect(() => {
+    const updateFullscreenState = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    updateFullscreenState();
+    document.addEventListener("fullscreenchange", updateFullscreenState);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", updateFullscreenState);
+    };
+  }, []);
+
+  const enterFullscreen = useCallback(async () => {
+    try {
+      await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+      setFullscreenError(null);
+    } catch {
+      setFullscreenError("Fullscreen was blocked. Try again or press Control + Command + F.");
+    }
+  }, []);
 
   useEffect(() => {
     if (
@@ -771,6 +795,32 @@ export function ShowScreen({
             Video playback failed
           </p>
           <p className="mt-3 text-base leading-7 text-white/85">{playbackError}</p>
+        </aside>
+      ) : null}
+
+      {!isFullscreen ? (
+        <aside className="absolute inset-0 z-[100] grid cursor-default place-items-center bg-black/60 px-6 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[2rem] border border-white/15 bg-black/80 p-8 text-center shadow-2xl">
+            <p className="font-mono text-xs font-semibold uppercase tracking-[0.34em] text-plasma">
+              Presentation mode
+            </p>
+            <h1 className="mt-4 text-3xl font-semibold text-white">Enter Fullscreen</h1>
+            <p className="mt-3 text-sm leading-6 text-white/65">
+              Hide the browser tabs, address bar, menu bar, and Dock for the live show.
+            </p>
+            <button
+              type="button"
+              onClick={() => void enterFullscreen()}
+              className="mt-7 w-full rounded-full bg-white px-6 py-4 text-base font-bold text-black transition hover:bg-plasma focus:outline-none focus:ring-4 focus:ring-plasma/40"
+            >
+              Enter Fullscreen
+            </button>
+            {fullscreenError ? (
+              <p role="alert" className="mt-4 text-sm leading-6 text-ember">
+                {fullscreenError}
+              </p>
+            ) : null}
+          </div>
         </aside>
       ) : null}
 

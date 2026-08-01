@@ -525,7 +525,7 @@ export function DashboardShell({
       popup.moveTo(0, 0);
       popup.resizeTo(window.screen.availWidth, window.screen.availHeight);
       popup.focus();
-      setShowWindowFeedback("Show view opened in a full-screen presentation window.");
+      setShowWindowFeedback("Show window opened. Click Enter Fullscreen inside it to hide all browser controls.");
       return;
     }
 
@@ -1076,7 +1076,7 @@ export function DashboardShell({
                 className="block w-full rounded-4xl border border-white/10 bg-black/20 p-4 text-left transition hover:border-plasma/40"
               >
                 <p className="text-sm font-semibold text-white">Pop Out Show Window</p>
-                <p className="mt-2 text-sm text-white/60">Open the live screen in a full-screen presentation window without browser tabs.</p>
+                <p className="mt-2 text-sm text-white/60">Open the live screen, then click Enter Fullscreen to hide all browser controls.</p>
               </button>
               <a
                 href={showLink}
