@@ -506,11 +506,26 @@ export function DashboardShell({
 
   function openShowPopout() {
     const absoluteShowLink = resolveAbsoluteUrl(showLink);
-    const popup = window.open(absoluteShowLink, "_blank");
+    const popupFeatures = [
+      "popup=yes",
+      "toolbar=no",
+      "location=no",
+      "menubar=no",
+      "status=no",
+      "scrollbars=no",
+      "resizable=yes",
+      "left=0",
+      "top=0",
+      `width=${window.screen.availWidth}`,
+      `height=${window.screen.availHeight}`,
+    ].join(",");
+    const popup = window.open(absoluteShowLink, "dream-sequence-show", popupFeatures);
 
     if (popup) {
+      popup.moveTo(0, 0);
+      popup.resizeTo(window.screen.availWidth, window.screen.availHeight);
       popup.focus();
-      setShowWindowFeedback("Show view opened in a separate window/tab.");
+      setShowWindowFeedback("Show view opened in a full-screen presentation window.");
       return;
     }
 
@@ -1061,7 +1076,7 @@ export function DashboardShell({
                 className="block w-full rounded-4xl border border-white/10 bg-black/20 p-4 text-left transition hover:border-plasma/40"
               >
                 <p className="text-sm font-semibold text-white">Pop Out Show Window</p>
-                <p className="mt-2 text-sm text-white/60">Open the live screen in another tab/window while you stay on the dashboard.</p>
+                <p className="mt-2 text-sm text-white/60">Open the live screen in a full-screen presentation window without browser tabs.</p>
               </button>
               <a
                 href={showLink}
