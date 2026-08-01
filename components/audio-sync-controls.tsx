@@ -171,7 +171,13 @@ export function AudioSyncControls(props: AudioSyncControlsProps) {
         {!props.error && props.transitionFeedback ? <p>{props.transitionFeedback}</p> : null}
         {!props.error && !props.transitionFeedback && props.lastCue ? <p>{formatCueLabel(props.lastCue)} detected.</p> : null}
         {!props.error && !props.transitionFeedback && !props.lastCue ? (
-          <p>{connected ? "Listening for beats, builds, and section changes." : "Without audio sync, ready remixes retain the existing automatic crossfade behavior in the show window."}</p>
+          <p>
+            {connected
+              ? props.autoTakeOnCue
+                ? "Listening for musical cues before taking the next remix."
+                : "Audio-reactive visuals are active. Ready remixes keep cycling automatically."
+              : "Without audio sync, ready remixes retain the existing automatic crossfade behavior in the show window."}
+          </p>
         ) : null}
       </div>
     </DashboardDisclosure>

@@ -13,6 +13,7 @@ type PlaybackIntroductionAsset = {
 } | null;
 
 const automaticPlaybackTransitionLeadSeconds = 0.5;
+const maximumStandbyRetryDelayMs = 10_000;
 
 function comparePlaybackAssets(
   left: PlaybackRotationAsset,
@@ -185,6 +186,16 @@ export function decideAutomaticCueTransition({
   return nextAssetReady ? "take-remix" : "wait-for-remix";
 }
 
+export function isCueSyncedPlaybackActive({
+  audioSyncConnected,
+  autoTakeOnCue
+}: {
+  audioSyncConnected: boolean;
+  autoTakeOnCue: boolean;
+}) {
+  return audioSyncConnected && autoTakeOnCue;
+}
+
 export function getTypewriterChunkSize(characterCount: number) {
   if (characterCount <= 0) {
     return 0;
@@ -258,6 +269,14 @@ export function shouldHandoffPreparedPlaybackAtBoundary({
 
 export function getStandbyVideoSlot(activeSlot: VideoSlotIndex): VideoSlotIndex {
   return activeSlot === 0 ? 1 : 0;
+}
+
+export function getStandbyRetryDelayMs(attempt: number) {
+  const normalizedAttempt = Number.isFinite(attempt)
+    ? Math.max(1, Math.floor(attempt))
+    : 1;
+
+  return Math.min(normalizedAttempt * 750, maximumStandbyRetryDelayMs);
 }
 
 export function getRenderableVideoSlots<Slot>(

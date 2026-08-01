@@ -47,6 +47,22 @@ describe("audio sync channel protocol", () => {
     ).toBe(false);
   });
 
+  it("rejects stale protocol messages from browser tabs left open during a deployment", () => {
+    expect(
+      isAudioSyncMessage({
+        version: 2,
+        sessionId: "session-123",
+        sourceId: "old-dashboard",
+        sentAt: Date.now(),
+        type: "state",
+        connected: true,
+        intensity: 0.85,
+        autoTakeOnCue: true,
+        effect: "bass-zoom"
+      })
+    ).toBe(false);
+  });
+
   it("rejects frames with an unknown effect", () => {
     expect(
       isAudioSyncMessage({

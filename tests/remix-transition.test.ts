@@ -8,7 +8,9 @@ import {
   getNextPlaybackRotationAsset,
   getPlaybackAttribution,
   getRenderableVideoSlots,
+  getStandbyRetryDelayMs,
   getStandbyVideoSlot,
+  isCueSyncedPlaybackActive,
   isVideoSlotVisible,
   shouldAdvancePlaybackAtVideoEnd,
   shouldHandoffPreparedPlaybackAtBoundary,
@@ -105,6 +107,34 @@ describe("remix transition cues", () => {
         nextAssetReady: true
       })
     ).toBe("ignore");
+  });
+
+  it("keeps automatic remix cycling active unless cue-synced takes are explicitly enabled", () => {
+    expect(
+      isCueSyncedPlaybackActive({
+        audioSyncConnected: true,
+        autoTakeOnCue: false
+      })
+    ).toBe(false);
+    expect(
+      isCueSyncedPlaybackActive({
+        audioSyncConnected: true,
+        autoTakeOnCue: true
+      })
+    ).toBe(true);
+    expect(
+      isCueSyncedPlaybackActive({
+        audioSyncConnected: false,
+        autoTakeOnCue: true
+      })
+    ).toBe(false);
+  });
+
+  it("keeps retrying failed standby videos with a capped backoff", () => {
+    expect(getStandbyRetryDelayMs(1)).toBe(750);
+    expect(getStandbyRetryDelayMs(3)).toBe(2250);
+    expect(getStandbyRetryDelayMs(20)).toBe(10_000);
+    expect(getStandbyRetryDelayMs(Number.NaN)).toBe(750);
   });
 
   it("reveals prompts in small typewriter chunks", () => {

@@ -35,7 +35,7 @@ export function useShowAudioSync(sessionId: string) {
   const lastTakeIdRef = useRef("");
   const [connected, setConnected] = useState(false);
   const [intensity, setIntensity] = useState(0.85);
-  const [autoTakeOnCue, setAutoTakeOnCue] = useState(true);
+  const [autoTakeOnCue, setAutoTakeOnCue] = useState(false);
   const [effect, setEffect] = useState<AudioReactiveEffectId>(defaultAudioReactiveEffect);
   const [lastCue, setLastCue] = useState<RemoteAudioCue | null>(null);
   const [manualTakeRequestId, setManualTakeRequestId] = useState<string | null>(null);

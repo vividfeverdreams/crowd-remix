@@ -2,7 +2,7 @@ import type { AudioCueKind } from "@/lib/audio-reactivity";
 import { isAudioReactiveEffectId, type AudioReactiveEffectId } from "@/lib/audio-reactive-effects";
 import type { AudioReactiveLevels } from "@/lib/use-audio-reactive-input";
 
-const protocolVersion = 2;
+const protocolVersion = 3;
 
 type AudioSyncBaseMessage = {
   version: typeof protocolVersion;

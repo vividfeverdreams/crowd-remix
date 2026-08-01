@@ -19,7 +19,7 @@ type DashboardAudioSyncProps = {
 
 export function DashboardAudioSync({ sessionId, nextReady, relayToken }: DashboardAudioSyncProps) {
   const audio = useAudioReactiveInput();
-  const [autoTakeOnCue, setAutoTakeOnCue] = useState(true);
+  const [autoTakeOnCue, setAutoTakeOnCue] = useState(false);
   const [autoCycleEffects, setAutoCycleEffects] = useState(false);
   const [selectedEffect, setSelectedEffect] = useState<AudioReactiveEffectId>(defaultAudioReactiveEffect);
   const [vfxIntensity, setVfxIntensity] = useState(0.85);

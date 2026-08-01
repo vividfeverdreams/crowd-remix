@@ -11,7 +11,9 @@ import {
   getIntroducedPlaybackAssetIds,
   getNextPlaybackRotationAsset,
   getPlaybackAttribution,
+  isCueSyncedPlaybackActive,
   getRenderableVideoSlots,
+  getStandbyRetryDelayMs,
   getStandbyVideoSlot,
   shouldShowPlaybackIntroduction,
   shouldAdvancePlaybackAtVideoEnd,
@@ -193,13 +195,17 @@ export function ShowScreen({
       : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset);
   const boundaryAuthorizedAssetId =
     authoritativeCurrentAsset?.id ?? authorizedBoundaryAssetId;
+  const cueSyncedPlaybackActive = isCueSyncedPlaybackActive({
+    audioSyncConnected: audioSync.connected,
+    autoTakeOnCue: audioSync.autoTakeOnCue
+  });
   const preparedBoundaryHandoff = Boolean(
     standbyTransition &&
       standbyReadyAssetId === standbyTransition.assetId &&
       promptReveal?.assetId !== standbyTransition.assetId &&
       shouldHandoffPreparedPlaybackAtBoundary({
         isMonitor,
-        audioSyncConnected: audioSync.connected,
+        audioSyncConnected: cueSyncedPlaybackActive,
         candidateAssetId: standbyTransition.assetId,
         authorizedAssetId: boundaryAuthorizedAssetId
       })
@@ -476,15 +482,14 @@ export function ShowScreen({
           });
 
           standbyPreloadAttemptsRef.current += 1;
+          const retryDelay = getStandbyRetryDelayMs(
+            standbyPreloadAttemptsRef.current
+          );
 
-          if (standbyPreloadAttemptsRef.current <= 3) {
-            const retryDelay = standbyPreloadAttemptsRef.current * 750;
-
-            standbyRetryTimerRef.current = window.setTimeout(() => {
-              standbyRetryTimerRef.current = null;
-              setStandbyRetryRevision((revision) => revision + 1);
-            }, retryDelay);
-          }
+          standbyRetryTimerRef.current = window.setTimeout(() => {
+            standbyRetryTimerRef.current = null;
+            setStandbyRetryRevision((revision) => revision + 1);
+          }, retryDelay);
         }
       });
 
@@ -598,7 +603,7 @@ export function ShowScreen({
         promptRevealRef.current?.assetId === transition.assetId;
       const boundaryAuthorized = shouldHandoffPreparedPlaybackAtBoundary({
         isMonitor,
-        audioSyncConnected: audioSync.connected,
+        audioSyncConnected: cueSyncedPlaybackActive,
         candidateAssetId: transition?.assetId ?? null,
         authorizedAssetId:
           authoritativeCurrentAsset?.id ??
@@ -667,9 +672,9 @@ export function ShowScreen({
         });
     },
     [
-      audioSync.connected,
       authoritativeCurrentAsset?.id,
       commitPlaybackTransition,
+      cueSyncedPlaybackActive,
       getVideoElement,
       isMonitor,
       playbackMutationsEnabled
