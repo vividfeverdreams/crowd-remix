@@ -950,7 +950,7 @@ function WordmarkOverlay({
 
 function AudienceQrOverlay({ submissionUrl }: { submissionUrl: string }) {
   return (
-    <aside className="pointer-events-none absolute right-[clamp(0.75rem,1.5vw,1.5rem)] top-[clamp(0.75rem,1.5vw,1.5rem)] z-50 w-[clamp(5rem,12vw,10rem)]">
+    <aside className="pointer-events-none absolute right-[clamp(0.75rem,1.5vw,1.5rem)] top-[clamp(0.75rem,1.5vw,1.5rem)] z-50 w-[clamp(5rem,12vw,10rem)] overflow-hidden rounded-[clamp(0.65rem,1.2vw,1rem)] bg-white p-[clamp(0.25rem,0.55vw,0.5rem)] shadow-2xl">
       <QRCodeSVG
         value={submissionUrl}
         title="QR code for the audience remix submission page"
@@ -960,6 +960,9 @@ function AudienceQrOverlay({ submissionUrl }: { submissionUrl: string }) {
         fgColor="#091018"
         className="h-auto w-full"
       />
+      <p className="px-1 pb-[clamp(0.2rem,0.45vw,0.4rem)] text-center font-mono text-[clamp(0.48rem,0.9vw,0.72rem)] font-black uppercase leading-[1.15] tracking-[0.08em] text-[#091018]">
+        SCAN ME TO REMIX VIDEO
+      </p>
     </aside>
   );
 }
