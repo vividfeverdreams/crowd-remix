@@ -241,6 +241,47 @@ describe("playback transition target", () => {
     });
   });
 
+  it("accepts a predicted rotation asset when the explicit next slot is empty", async () => {
+    mocks.findPlayback.mockResolvedValue({
+      id: "playback-1",
+      currentAssetId: "asset-live",
+      nextAssetId: null
+    });
+
+    await expect(
+      completePlaybackTransition("session-1", "asset-remix")
+    ).resolves.toBe(true);
+
+    expect(mocks.updatePlaybackMany).toHaveBeenCalledWith({
+      where: {
+        id: "playback-1",
+        currentAssetId: "asset-live",
+        nextAssetId: null
+      },
+      data: {
+        currentAssetId: "asset-remix",
+        nextAssetId: null,
+        status: "live",
+        lastTransitionAt: expect.any(Date)
+      }
+    });
+  });
+
+  it("rejects a predicted rotation asset when another asset is explicitly queued", async () => {
+    mocks.findPlayback.mockResolvedValue({
+      id: "playback-1",
+      currentAssetId: "asset-live",
+      nextAssetId: "asset-other"
+    });
+
+    await expect(
+      completePlaybackTransition("session-1", "asset-remix")
+    ).resolves.toBeNull();
+
+    expect(mocks.findAsset).not.toHaveBeenCalled();
+    expect(mocks.updatePlaybackMany).not.toHaveBeenCalled();
+  });
+
   it("keeps a committed transition successful when audit logging fails", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     mocks.findPlayback.mockResolvedValue({

@@ -87,7 +87,11 @@ async function transitionPlaybackAsset(
       } satisfies PlaybackTransitionResult;
     }
 
-    if (requireQueuedAsset && playback.nextAssetId !== assetId) {
+    if (
+      requireQueuedAsset &&
+      playback.nextAssetId !== null &&
+      playback.nextAssetId !== assetId
+    ) {
       return null;
     }
 

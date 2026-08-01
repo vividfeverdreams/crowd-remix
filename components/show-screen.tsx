@@ -260,6 +260,24 @@ export function ShowScreen({
     []
   );
 
+  useEffect(() => {
+    const activeVideo = getVideoElement(activeVideoSlot);
+
+    if (!activeVideo || !activeVideo.paused || activeVideo.ended) {
+      return;
+    }
+
+    void requestVideoPlayback(activeVideo).catch((error) => {
+      console.error("[show-video] active slot could not resume", {
+        assetId: activeVideo.dataset.assetId ?? null,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      setPlaybackError(
+        "The current video paused unexpectedly. Refresh this show window to resume playback."
+      );
+    });
+  }, [activeAssetId, activeVideoSlot, getVideoElement]);
+
   const finishPromptReveal = useCallback(() => {
     const transition = promptRevealRef.current;
 
@@ -1150,13 +1168,29 @@ async function playPreparedVideoAtBoundary(video: HTMLVideoElement) {
     await seekVideoToStart(video);
   }
 
-  await video.play();
+  await requestVideoPlayback(video);
+}
+
+export async function requestVideoPlayback(
+  video: Pick<HTMLVideoElement, "paused" | "play">
+) {
+  const playbackRequest = video.play();
+
+  // Chromium can begin advancing a hidden video while leaving the play()
+  // promise pending until it becomes visible. Once playback has started,
+  // do not let that unresolved promise block the visual slot handoff.
+  if (!video.paused) {
+    void playbackRequest.catch(() => undefined);
+    return;
+  }
+
+  await playbackRequest;
 }
 
 async function restartVideoAtBoundary(video: HTMLVideoElement) {
   try {
     await seekVideoToStart(video);
-    await video.play();
+    await requestVideoPlayback(video);
   } catch (error) {
     console.error("[show-video] could not restart the active loop", {
       assetId: video.dataset.assetId ?? null,

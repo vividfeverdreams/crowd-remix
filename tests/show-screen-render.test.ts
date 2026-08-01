@@ -1,12 +1,35 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ShowScreen } from "@/components/show-screen";
+import { requestVideoPlayback, ShowScreen } from "@/components/show-screen";
 import type { SessionSnapshot } from "@/lib/snapshot";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 describe("show screen video presentation", () => {
+  it("commits a handoff once hidden video playback starts even if play remains pending", async () => {
+    const neverSettles = new Promise<void>(() => undefined);
+    const video = {
+      paused: true,
+      play() {
+        this.paused = false;
+        return neverSettles;
+      }
+    };
+
+    const completed = await Promise.race([
+      requestVideoPlayback(video as Pick<HTMLVideoElement, "paused" | "play">).then(
+        () => true
+      ),
+      new Promise<false>((resolve) => {
+        setTimeout(() => resolve(false), 100);
+      })
+    ]);
+
+    expect(completed).toBe(true);
+    expect(video.paused).toBe(false);
+  });
+
   it("renders asset-bound bottom-right attribution and no repeated intro", () => {
     const currentAsset = {
       id: "asset-current",
