@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { QRCodeSVG } from "qrcode.react";
 import {
   decideAutomaticCueTransition,
@@ -635,12 +636,36 @@ export function ShowScreen({
         if (playbackMutationsEnabled) {
           locallyAdvancedAssetIdRef.current = transition.assetId;
         }
-        setActiveVideoSlot(transition.videoSlot);
-        setStandbyTransition(null);
-        setPlaybackError(null);
-        setRequestedAssetId((current) =>
-          current === transition.assetId ? null : current
-        );
+
+        // Apply the opacity/z-index swap before asking Chromium to play. A
+        // play() request made while this slot is still hidden can remain
+        // pending for several seconds even though the media is ready.
+        flushSync(() => {
+          setActiveVideoSlot(transition.videoSlot);
+          setStandbyTransition(null);
+          setPlaybackError(null);
+          setRequestedAssetId((current) =>
+            current === transition.assetId ? null : current
+          );
+        });
+
+        void requestVideoPlayback(incomingVideo).catch((error) => {
+          console.error("[show-transition] promoted video could not start", {
+            assetId: transition.assetId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+
+          if (
+            activeVideoSlotRef.current === transition.videoSlot &&
+            incomingVideo.dataset.assetId === transition.assetId
+          ) {
+            setPlaybackError(
+              "The next remix could not start. Refresh this show window to retry it."
+            );
+            void restartVideoAtBoundary(incomingVideo);
+          }
+        });
+
         commitPlaybackTransition(transition.assetId);
       } catch (error) {
         incomingVideo.pause();
