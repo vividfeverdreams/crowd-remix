@@ -627,46 +627,21 @@ export function ShowScreen({
       handoffInFlightRef.current = true;
 
       try {
-        const playbackRequest = startVisualHandoff(
-          () => playPreparedVideoAtBoundary(incomingVideo),
-          () => {
-            introducedAssetIdsRef.current?.add(transition.assetId);
-            activeVideoSlotRef.current = transition.videoSlot;
-            standbyTransitionRef.current = null;
-            standbyReadyAssetIdRef.current = null;
-            authorizedBoundaryAssetIdRef.current = null;
-            if (playbackMutationsEnabled) {
-              locallyAdvancedAssetIdRef.current = transition.assetId;
-            }
-            setActiveVideoSlot(transition.videoSlot);
-            setStandbyTransition(null);
-            setPlaybackError(null);
-            setRequestedAssetId((current) =>
-              current === transition.assetId ? null : current
-            );
-            commitPlaybackTransition(transition.assetId);
-          }
+        introducedAssetIdsRef.current?.add(transition.assetId);
+        activeVideoSlotRef.current = transition.videoSlot;
+        standbyTransitionRef.current = null;
+        standbyReadyAssetIdRef.current = null;
+        authorizedBoundaryAssetIdRef.current = null;
+        if (playbackMutationsEnabled) {
+          locallyAdvancedAssetIdRef.current = transition.assetId;
+        }
+        setActiveVideoSlot(transition.videoSlot);
+        setStandbyTransition(null);
+        setPlaybackError(null);
+        setRequestedAssetId((current) =>
+          current === transition.assetId ? null : current
         );
-
-        // A hidden Chromium video can advance while its play() promise remains
-        // pending. startVisualHandoff has already made it visible, so the next
-        // boundary does not depend on that promise settling.
-        void playbackRequest.catch((error) => {
-          console.error("[show-transition] prepared boundary handoff failed", {
-            assetId: transition.assetId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-
-          if (
-            activeVideoSlotRef.current === transition.videoSlot &&
-            incomingVideo.dataset.assetId === transition.assetId
-          ) {
-            setPlaybackError(
-              "The next remix could not start. Refresh this show window to retry it."
-            );
-            void restartVideoAtBoundary(incomingVideo);
-          }
-        });
+        commitPlaybackTransition(transition.assetId);
       } catch (error) {
         incomingVideo.pause();
         void restartVideoAtBoundary(outgoingVideo);
@@ -1147,29 +1122,6 @@ async function prepareVideoForStandby(video: HTMLVideoElement) {
   }
 
   await seekVideoToStart(video);
-}
-
-async function playPreparedVideoAtBoundary(video: HTMLVideoElement) {
-  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    await prepareVideoForStandby(video);
-  } else if (video.currentTime > 0.01) {
-    await seekVideoToStart(video);
-  }
-
-  await requestVideoPlayback(video);
-}
-
-export function startVisualHandoff(
-  startPlayback: () => Promise<void>,
-  commitVisibleSlot: () => void
-) {
-  const playbackRequest = startPlayback();
-
-  // Visibility must not depend on play() settling: Chromium can keep the
-  // promise pending while an opacity-hidden video is already advancing.
-  commitVisibleSlot();
-
-  return playbackRequest;
 }
 
 export async function requestVideoPlayback(

@@ -1,32 +1,13 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import {
-  requestVideoPlayback,
-  ShowScreen,
-  startVisualHandoff
-} from "@/components/show-screen";
+import { requestVideoPlayback, ShowScreen } from "@/components/show-screen";
 import type { SessionSnapshot } from "@/lib/snapshot";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 describe("show screen video presentation", () => {
-  it("switches the visible slot without waiting for hidden playback to settle", () => {
-    const neverSettles = new Promise<void>(() => undefined);
-    let visibleSlotCommitted = false;
-
-    const playbackRequest = startVisualHandoff(
-      () => neverSettles,
-      () => {
-        visibleSlotCommitted = true;
-      }
-    );
-
-    expect(visibleSlotCommitted).toBe(true);
-    expect(playbackRequest).toBe(neverSettles);
-  });
-
-  it("commits a handoff once hidden video playback starts even if play remains pending", async () => {
+  it("recognizes playback starting even if the play promise remains pending", async () => {
     const neverSettles = new Promise<void>(() => undefined);
     class DeferredPlaybackVideo extends EventTarget {
       paused = true;
