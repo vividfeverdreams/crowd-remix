@@ -114,14 +114,10 @@ export function ShowScreen({
   const [activeVideoSlot, setActiveVideoSlot] = useState<VideoSlotIndex>(0);
   const [standbyTransition, setStandbyTransition] =
     useState<QueuedTransition | null>(null);
-  const [standbyReadyAssetId, setStandbyReadyAssetId] =
-    useState<string | null>(null);
   const [standbyRetryRevision, setStandbyRetryRevision] = useState(0);
   const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
   const [promptExiting, setPromptExiting] = useState(false);
   const [requestedAssetId, setRequestedAssetId] = useState<string | null>(null);
-  const [authorizedBoundaryAssetId, setAuthorizedBoundaryAssetId] =
-    useState<string | null>(null);
   const [submissionUrl, setSubmissionUrl] = useState("");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -193,24 +189,10 @@ export function ShowScreen({
     (isMonitor
       ? null
       : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset);
-  const boundaryAuthorizedAssetId =
-    authoritativeCurrentAsset?.id ?? authorizedBoundaryAssetId;
   const cueSyncedPlaybackActive = isCueSyncedPlaybackActive({
     audioSyncConnected: audioSync.connected,
     autoTakeOnCue: audioSync.autoTakeOnCue
   });
-  const preparedBoundaryHandoff = Boolean(
-    standbyTransition &&
-      standbyReadyAssetId === standbyTransition.assetId &&
-      promptReveal?.assetId !== standbyTransition.assetId &&
-      shouldHandoffPreparedPlaybackAtBoundary({
-        isMonitor,
-        audioSyncConnected: cueSyncedPlaybackActive,
-        candidateAssetId: standbyTransition.assetId,
-        authorizedAssetId: boundaryAuthorizedAssetId
-      })
-  );
-
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
   }, [session.userId]);
@@ -328,7 +310,6 @@ export function ShowScreen({
 
     if (decision === "take-remix" && candidateAsset?.id) {
       authorizedBoundaryAssetIdRef.current = candidateAsset.id;
-      setAuthorizedBoundaryAssetId(candidateAsset.id);
     }
   }, [
     audioSync.autoTakeOnCue,
@@ -358,7 +339,6 @@ export function ShowScreen({
 
     handledManualTakeIdRef.current = requestId;
     authorizedBoundaryAssetIdRef.current = selectedAssetId;
-    setAuthorizedBoundaryAssetId(selectedAssetId);
     setRequestedAssetId(selectedAssetId);
   }, [
     activeAssetId,
@@ -382,7 +362,6 @@ export function ShowScreen({
         standbyRetryTimerRef.current = null;
       }
 
-      setStandbyReadyAssetId(null);
       setStandbyTransition(null);
       return;
     }
@@ -417,7 +396,6 @@ export function ShowScreen({
     }
 
     standbyReadyAssetIdRef.current = null;
-    setStandbyReadyAssetId(null);
     standbyPreloadAttemptsRef.current = 0;
 
     if (standbyRetryTimerRef.current !== null) {
@@ -471,7 +449,6 @@ export function ShowScreen({
           video.dataset.assetId === standbyTransition.assetId
         ) {
           standbyReadyAssetIdRef.current = standbyTransition.assetId;
-          setStandbyReadyAssetId(standbyTransition.assetId);
           standbyPreloadAttemptsRef.current = 0;
 
           if (
@@ -492,7 +469,6 @@ export function ShowScreen({
       .catch((error) => {
         if (!cancelled) {
           standbyReadyAssetIdRef.current = null;
-          setStandbyReadyAssetId(null);
           console.error("[show-video] standby preload failed", {
             assetId: standbyTransition.assetId,
             videoSlot: standbyTransition.videoSlot,
@@ -662,8 +638,6 @@ export function ShowScreen({
             if (playbackMutationsEnabled) {
               locallyAdvancedAssetIdRef.current = transition.assetId;
             }
-            setStandbyReadyAssetId(null);
-            setAuthorizedBoundaryAssetId(null);
             setActiveVideoSlot(transition.videoSlot);
             setStandbyTransition(null);
             setPlaybackError(null);
@@ -763,7 +737,6 @@ export function ShowScreen({
                 }}
                 src={slot.url}
                 autoPlay={isActive}
-                loop={isActive && !preparedBoundaryHandoff}
                 muted
                 playsInline
                 preload="auto"

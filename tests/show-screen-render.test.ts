@@ -105,7 +105,7 @@ describe("show screen video presentation", () => {
 
     expect(markup).toContain('data-asset-id="asset-current"');
     expect(markup).toContain('src="/current-loop.mp4"');
-    expect(markup).toContain("loop");
+    expect(markup).not.toContain(' loop=""');
     expect(markup).toContain("Nova");
     expect(markup).toContain("Chrome clouds melt over the dance floor");
     expect(markup).toContain('data-attribution-asset-id="asset-current"');
