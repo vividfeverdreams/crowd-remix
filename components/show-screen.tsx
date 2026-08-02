@@ -2,7 +2,6 @@
 
 import Image from "next/image";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import { QRCodeSVG } from "qrcode.react";
 import {
   decideAutomaticCueTransition,
@@ -142,6 +141,8 @@ export function ShowScreen({
   const handledCueIdRef = useRef<string | null>(null);
   const handledManualTakeIdRef = useRef<string | null>(null);
   const locallyAdvancedAssetIdRef = useRef<string | null>(null);
+  const promotedPlaybackAssetIdRef = useRef<string | null>(null);
+  const cancelPromotedPlaybackRef = useRef<(() => void) | null>(null);
 
   const session = snapshot.session;
   const playback = session.playbackState;
@@ -246,7 +247,12 @@ export function ShowScreen({
   useEffect(() => {
     const activeVideo = getVideoElement(activeVideoSlot);
 
-    if (!activeVideo || !activeVideo.paused || activeVideo.ended) {
+    if (
+      !activeVideo ||
+      !activeVideo.paused ||
+      activeVideo.ended ||
+      promotedPlaybackAssetIdRef.current === activeAssetId
+    ) {
       return;
     }
 
@@ -628,6 +634,7 @@ export function ShowScreen({
       handoffInFlightRef.current = true;
 
       try {
+        outgoingVideo.pause();
         introducedAssetIdsRef.current?.add(transition.assetId);
         activeVideoSlotRef.current = transition.videoSlot;
         standbyTransitionRef.current = null;
@@ -637,33 +644,48 @@ export function ShowScreen({
           locallyAdvancedAssetIdRef.current = transition.assetId;
         }
 
-        // Apply the opacity/z-index swap before asking Chromium to play. A
-        // play() request made while this slot is still hidden can remain
-        // pending for several seconds even though the media is ready.
-        flushSync(() => {
-          setActiveVideoSlot(transition.videoSlot);
-          setStandbyTransition(null);
-          setPlaybackError(null);
-          setRequestedAssetId((current) =>
-            current === transition.assetId ? null : current
-          );
-        });
+        promotedPlaybackAssetIdRef.current = transition.assetId;
+        cancelPromotedPlaybackRef.current?.();
+        setActiveVideoSlot(transition.videoSlot);
+        setStandbyTransition(null);
+        setPlaybackError(null);
+        setRequestedAssetId((current) =>
+          current === transition.assetId ? null : current
+        );
 
-        void requestVideoPlayback(incomingVideo).catch((error) => {
-          console.error("[show-transition] promoted video could not start", {
-            assetId: transition.assetId,
-            error: error instanceof Error ? error.message : String(error)
-          });
+        // Let React commit the opacity/z-index swap and let Chromium paint one
+        // visible frame before play(). Calling play while the slot is hidden
+        // can start the wrong composited layer and leave the visible one still.
+        cancelPromotedPlaybackRef.current = scheduleAfterVisiblePaint(() => {
+          cancelPromotedPlaybackRef.current = null;
+
+          if (promotedPlaybackAssetIdRef.current === transition.assetId) {
+            promotedPlaybackAssetIdRef.current = null;
+          }
 
           if (
-            activeVideoSlotRef.current === transition.videoSlot &&
-            incomingVideo.dataset.assetId === transition.assetId
+            activeVideoSlotRef.current !== transition.videoSlot ||
+            incomingVideo.dataset.assetId !== transition.assetId
           ) {
-            setPlaybackError(
-              "The next remix could not start. Refresh this show window to retry it."
-            );
-            void restartVideoAtBoundary(incomingVideo);
+            return;
           }
+
+          void requestVideoPlayback(incomingVideo).catch((error) => {
+            console.error("[show-transition] promoted video could not start", {
+              assetId: transition.assetId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+
+            if (
+              activeVideoSlotRef.current === transition.videoSlot &&
+              incomingVideo.dataset.assetId === transition.assetId
+            ) {
+              setPlaybackError(
+                "The next remix could not start. Refresh this show window to retry it."
+              );
+              void restartVideoAtBoundary(incomingVideo);
+            }
+          });
         });
 
         commitPlaybackTransition(transition.assetId);
@@ -702,6 +724,10 @@ export function ShowScreen({
         window.clearTimeout(standbyRetryTimerRef.current);
       }
 
+      cancelPromotedPlaybackRef.current?.();
+      cancelPromotedPlaybackRef.current = null;
+      promotedPlaybackAssetIdRef.current = null;
+
       transitionRequestAbortRef.current?.abort();
       transitionRequestAbortRef.current = null;
       promptRevealRef.current = null;
@@ -736,7 +762,6 @@ export function ShowScreen({
                   willChange: "opacity"
                 }}
                 src={slot.url}
-                autoPlay={isActive}
                 muted
                 playsInline
                 preload="auto"
@@ -884,13 +909,20 @@ function NextRemixProgressOverlay({
       }`}
     >
       <div className="rounded-2xl border border-white/15 bg-black/45 px-[clamp(0.75rem,1.5vw,1.25rem)] py-[clamp(0.55rem,1.2vw,0.9rem)] shadow-2xl backdrop-blur-md">
-        <p className="font-mono text-[clamp(0.58rem,1.2vw,0.82rem)] font-semibold uppercase tracking-[0.34em] text-white">
-          DREAM SEQUENCE
-        </p>
+        <div className="flex items-center justify-between gap-4">
+          <p className="font-mono text-[clamp(0.58rem,1.2vw,0.82rem)] font-semibold uppercase tracking-[0.34em] text-white">
+            DREAM SEQUENCE
+          </p>
+          {hasMeasuredProgress ? (
+            <p className="font-mono text-[clamp(0.52rem,1vw,0.72rem)] font-semibold uppercase tracking-[0.2em] text-white/65">
+              EST. {progress}%
+            </p>
+          ) : null}
+        </div>
         <div
           className="mt-[clamp(0.45rem,0.9vw,0.7rem)] h-[clamp(0.18rem,0.45vw,0.32rem)] overflow-hidden rounded-full bg-white/15"
           role="progressbar"
-          aria-label="Next remix generation progress"
+          aria-label="Estimated next remix generation progress"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={hasMeasuredProgress ? progress : undefined}
@@ -1218,6 +1250,49 @@ function waitForPlaybackRetry(delayMs: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, delayMs);
   });
+}
+
+function scheduleAfterVisiblePaint(callback: () => void) {
+  let completed = false;
+  let firstFrame = 0;
+  let secondFrame = 0;
+
+  const fallbackTimer = window.setTimeout(run, 250);
+
+  function cleanup() {
+    window.clearTimeout(fallbackTimer);
+
+    if (firstFrame) {
+      window.cancelAnimationFrame(firstFrame);
+    }
+
+    if (secondFrame) {
+      window.cancelAnimationFrame(secondFrame);
+    }
+  }
+
+  function run() {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    cleanup();
+    callback();
+  }
+
+  firstFrame = window.requestAnimationFrame(() => {
+    secondFrame = window.requestAnimationFrame(run);
+  });
+
+  return () => {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    cleanup();
+  };
 }
 
 function seekVideoToStart(video: HTMLVideoElement) {

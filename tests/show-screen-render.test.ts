@@ -86,6 +86,7 @@ describe("show screen video presentation", () => {
 
     expect(markup).toContain('data-asset-id="asset-current"');
     expect(markup).toContain('src="/current-loop.mp4"');
+    expect(markup).not.toContain('autoplay=""');
     expect(markup).not.toContain(' loop=""');
     expect(markup).toContain("Nova");
     expect(markup).toContain("Chrome clouds melt over the dance floor");
@@ -142,5 +143,51 @@ describe("show screen video presentation", () => {
 
     expect(markup).toContain('data-asset-id="asset-original"');
     expect(markup).not.toContain("data-attribution-asset-id");
+  });
+
+  it("shows the estimated progress received from the live session stream", () => {
+    const snapshot = {
+      session: {
+        id: "session-1",
+        userId: "user-1",
+        playbackState: null,
+        visualAssets: [],
+        renderJobs: [
+          {
+            id: "render-active",
+            mode: "remix",
+            status: "in_progress",
+            promptText: "Liquid chrome skyline",
+            failureReason: null,
+            createdAt: new Date("2026-08-01T00:00:00.000Z"),
+            progress: 42
+          }
+        ],
+        wordmarkAudioReactiveOnly: false,
+        wordmarkOverlayVisible: false,
+        wordmarkOpacity: 1,
+        wordmarkSize: 1,
+        progressOverlayVisible: true,
+        qrOverlayVisible: false
+      },
+      queueHealth: {
+        approvedCount: 0,
+        queuedRenderCount: 0,
+        renderingCount: 1,
+        readyAssetCount: 0,
+        waitingOnRender: true
+      }
+    } as unknown as NonNullable<SessionSnapshot>;
+
+    const markup = renderToStaticMarkup(
+      React.createElement(ShowScreen, {
+        initialSnapshot: snapshot
+      })
+    );
+
+    expect(markup).toContain("EST. 42%");
+    expect(markup).toContain('aria-label="Estimated next remix generation progress"');
+    expect(markup).toContain('aria-valuenow="42"');
+    expect(markup).toContain("width:42%");
   });
 });

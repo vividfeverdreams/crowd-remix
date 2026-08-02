@@ -156,15 +156,18 @@ export function DashboardShell({
   const activeRenderJob = session.renderJobs.find(
     (job: any) => job.status === "queued" || job.status === "in_progress"
   );
+  const activeRenderProgress = activeRenderJob
+    ? renderProgress[activeRenderJob.id] ?? activeRenderJob.progress ?? undefined
+    : undefined;
   const enabledOverlayCount = [
     qrOverlayVisible,
     wordmarkOverlayVisible,
     progressOverlayVisible
   ].filter(Boolean).length;
   const renderJobsStatus = activeRenderJob
-    ? renderProgress[activeRenderJob.id] === undefined
+    ? activeRenderProgress === undefined
       ? activeRenderJob.status.replace("_", " ")
-      : `${renderProgress[activeRenderJob.id]}%`
+      : `~${activeRenderProgress}% estimated`
     : `${session.renderJobs.length} recent`;
   const reconciliationNeeded = shouldReconcileSession({
     sessionStatus: session.status,
@@ -601,7 +604,11 @@ export function DashboardShell({
       {initialGenerationPresentation.visible ? (
         <InitialGenerationStatus
           job={seedRender}
-          progress={seedRender ? renderProgress[seedRender.id] : undefined}
+          progress={
+            seedRender
+              ? renderProgress[seedRender.id] ?? seedRender.progress ?? undefined
+              : undefined
+          }
           isStarting={isStartingInitialRender}
           failed={initialGenerationPresentation.failed}
           failureReason={initialGenerationPresentation.failureReason}
@@ -1120,12 +1127,15 @@ export function DashboardShell({
                       <p className="text-sm font-semibold text-white">{job.mode === "seed" ? "Seed Render" : "DREAM SEQUENCE"}</p>
                       <span className="text-xs uppercase tracking-[0.24em] text-white/40">
                         {job.status === "queued" || job.status === "in_progress"
-                          ? `${renderProgress[job.id] === undefined ? "" : `${renderProgress[job.id]}% · `}${job.status.replace("_", " ")}`
+                          ? `${(renderProgress[job.id] ?? job.progress ?? undefined) === undefined ? "" : `~${renderProgress[job.id] ?? job.progress}% estimated · `}${job.status.replace("_", " ")}`
                           : job.status}
                       </span>
                     </div>
                     {job.status === "queued" || job.status === "in_progress" ? (
-                      <GenerationProgressBar progress={renderProgress[job.id]} compact />
+                      <GenerationProgressBar
+                        progress={renderProgress[job.id] ?? job.progress ?? undefined}
+                        compact
+                      />
                     ) : null}
                     <p className="mt-3 text-sm leading-6 text-white/68">{job.promptText}</p>
                     {job.status === "failed" && job.failureReason ? (
@@ -1216,10 +1226,10 @@ function InitialGenerationStatus({
         {!failed ? (
           <div className="shrink-0 text-left sm:text-right">
             <p className="text-4xl font-semibold tabular-nums text-white">
-              {hasMeasuredProgress ? `${progress}%` : "Working"}
+              {hasMeasuredProgress ? `~${progress}%` : "Working"}
             </p>
             <p className="mt-2 text-xs uppercase tracking-[0.22em] text-white/45">
-              {hasMeasuredProgress ? "render complete" : "waiting for first update"}
+              {hasMeasuredProgress ? "estimated progress" : "waiting for first update"}
             </p>
           </div>
         ) : null}

@@ -1,5 +1,6 @@
 import type { PromptSubmission, RankingResult, RenderJob, VisualAsset } from "@prisma/client";
 import { db } from "@/lib/db";
+import { estimateVideoRenderProgress } from "@/lib/render-progress";
 import {
   getStoredRenderProgress,
   renderProgressEventPrefix
@@ -129,15 +130,27 @@ export async function getSessionSnapshot(sessionId: string) {
   const queuedRender = session.renderJobs.find((job: any) => job.status === "queued" || job.status === "in_progress");
   const { auditEvents: showOverlayEvents, ...snapshotSession } = session;
   const showOverlaySettings = getShowOverlaySettings(showOverlayEvents);
-  const renderJobs = snapshotSession.renderJobs.map((job) => ({
-    id: job.id,
-    mode: job.mode,
-    status: job.status,
-    promptText: job.promptText,
-    failureReason: job.failureReason,
-    createdAt: job.createdAt,
-    progress: getStoredRenderProgress(showOverlayEvents, job.id)
-  }));
+  const renderJobs = snapshotSession.renderJobs.map((job) => {
+    const storedProgress = getStoredRenderProgress(showOverlayEvents, job.id);
+    const progress =
+      job.status === "queued" || job.status === "in_progress"
+        ? estimateVideoRenderProgress({
+            status: job.status,
+            createdAt: job.createdAt,
+            previousProgress: storedProgress ?? 0
+          })
+        : storedProgress;
+
+    return {
+      id: job.id,
+      mode: job.mode,
+      status: job.status,
+      promptText: job.promptText,
+      failureReason: job.failureReason,
+      createdAt: job.createdAt,
+      progress
+    };
+  });
   const playbackState = snapshotSession.playbackState
     ? {
         ...snapshotSession.playbackState,

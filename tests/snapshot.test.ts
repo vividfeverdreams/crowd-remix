@@ -31,6 +31,7 @@ vi.mock("@/lib/show-overlay-state", () => ({
 }));
 
 import { getSessionSnapshot } from "@/lib/snapshot";
+import { maximumEstimatedVideoProgress } from "@/lib/render-progress";
 
 describe("client session snapshots", () => {
   beforeEach(() => {
@@ -161,6 +162,9 @@ describe("client session snapshots", () => {
     expect(snapshot?.session.visualAssets[1]?.sourceSubmission?.sender).toBe("NeonGhost");
     expect(snapshot?.session.submissions[0]?.sender).toBeNull();
     expect(snapshot?.session.submissions[1]?.sender).toBe("NeonGhost");
+    expect(snapshot?.session.renderJobs[0]?.progress).toBe(
+      maximumEstimatedVideoProgress
+    );
 
     const serialized = JSON.stringify(snapshot);
 

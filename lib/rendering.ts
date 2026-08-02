@@ -9,6 +9,8 @@ import {
 } from "@/lib/participant-session";
 import { promoteOldestReadyAsset } from "@/lib/playback-queue";
 import { takePlaybackAsset } from "@/lib/playback-transition";
+import { estimateVideoRenderProgress } from "@/lib/render-progress";
+import { recordRenderJobProgress } from "@/lib/render-progress-state";
 import { getDemoLoopUrl, persistVideoAsset } from "@/lib/storage";
 import { formatVideoDuration } from "@/lib/video-duration";
 
@@ -362,6 +364,45 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
   };
 }
 
+type ProgressRenderJob = {
+  id: string;
+  sessionId: string;
+  createdAt: Date;
+};
+
+async function reportEstimatedRenderProgress(
+  renderJob: ProgressRenderJob,
+  status: "queued" | "in_progress"
+) {
+  const estimate = estimateVideoRenderProgress({
+    status,
+    createdAt: renderJob.createdAt
+  });
+  const progress = await recordRenderJobProgress(
+    renderJob.sessionId,
+    renderJob.id,
+    estimate
+  );
+
+  return {
+    status,
+    progress
+  };
+}
+
+async function reportCompletedRenderProgress(renderJob: ProgressRenderJob) {
+  const progress = await recordRenderJobProgress(
+    renderJob.sessionId,
+    renderJob.id,
+    100
+  );
+
+  return {
+    status: "completed" as const,
+    progress
+  };
+}
+
 export async function reconcileRenderJob(renderJobId: string) {
   const renderJob = await db.renderJob.findUnique({
     where: {
@@ -382,10 +423,7 @@ export async function reconcileRenderJob(renderJobId: string) {
   }
 
   if (renderJob.status === "completed") {
-    return {
-      status: "completed" as const,
-      progress: 100
-    };
+    return reportCompletedRenderProgress(renderJob);
   }
 
   if (renderJob.status === "failed") {
@@ -411,16 +449,10 @@ export async function reconcileRenderJob(renderJobId: string) {
     );
 
     if (!completed) {
-      return {
-        status: "in_progress" as const,
-        progress: null
-      };
+      return reportEstimatedRenderProgress(renderJob, "in_progress");
     }
 
-    return {
-      status: "completed" as const,
-      progress: 100
-    };
+    return reportCompletedRenderProgress(renderJob);
   }
 
   if (!renderJob.providerRequestId) {
@@ -433,10 +465,7 @@ export async function reconcileRenderJob(renderJobId: string) {
     // creating the background interaction and storing its ID. Give that claim
     // time to finish instead of racing reconciliation against it.
     if (renderAgeMs < staleGeminiRenderMs) {
-      return {
-        status: "queued" as const,
-        progress: null
-      };
+      return reportEstimatedRenderProgress(renderJob, "queued");
     }
 
     const failureResult = await failRenderJob(
@@ -445,10 +474,12 @@ export async function reconcileRenderJob(renderJobId: string) {
     );
     const failed = Boolean(failureResult && failureResult.failed);
 
-    return {
-      status: failed ? ("failed" as const) : ("in_progress" as const),
-      progress: failed ? 0 : null
-    };
+    return failed
+      ? {
+          status: "failed" as const,
+          progress: 0
+        }
+      : reportEstimatedRenderProgress(renderJob, "in_progress");
   }
 
   if (renderJob.providerOutputUri) {
@@ -459,17 +490,11 @@ export async function reconcileRenderJob(renderJobId: string) {
       );
 
       if (completion === "completed") {
-        return {
-          status: "completed" as const,
-          progress: 100
-        };
+        return reportCompletedRenderProgress(renderJob);
       }
 
       if (completion === "in_progress") {
-        return {
-          status: "in_progress" as const,
-          progress: null
-        };
+        return reportEstimatedRenderProgress(renderJob, "in_progress");
       }
     } catch (error) {
       console.warn("[render-job] URI-delivered Gemini video is not ready", {
@@ -529,10 +554,7 @@ export async function reconcileRenderJob(renderJobId: string) {
         }
       });
 
-      return {
-        status: "in_progress" as const,
-        progress: null
-      };
+      return reportEstimatedRenderProgress(renderJob, "in_progress");
     }
 
     console.error("[render-job] Gemini reconciliation failed", {
@@ -556,10 +578,12 @@ export async function reconcileRenderJob(renderJobId: string) {
     );
     const failed = Boolean(failureResult && failureResult.failed);
 
-    return {
-      status: failed ? ("failed" as const) : ("in_progress" as const),
-      progress: null
-    };
+    return failed
+      ? {
+          status: "failed" as const,
+          progress: null
+        }
+      : reportEstimatedRenderProgress(renderJob, "in_progress");
   }
 
   if (!interaction) {
@@ -593,10 +617,12 @@ export async function reconcileRenderJob(renderJobId: string) {
         });
       }
 
-      return {
-        status: failed ? ("failed" as const) : ("in_progress" as const),
-        progress: null
-      };
+      return failed
+        ? {
+            status: "failed" as const,
+            progress: null
+          }
+        : reportEstimatedRenderProgress(renderJob, "in_progress");
     }
 
     await db.renderJob.updateMany({
@@ -612,10 +638,7 @@ export async function reconcileRenderJob(renderJobId: string) {
       }
     });
 
-    return {
-      status: "in_progress" as const,
-      progress: null
-    };
+    return reportEstimatedRenderProgress(renderJob, "in_progress");
   }
 
   const video = extractVideoOutput(interaction);
@@ -631,16 +654,10 @@ export async function reconcileRenderJob(renderJobId: string) {
     });
 
     if (!completed) {
-      return {
-        status: "in_progress" as const,
-        progress: null
-      };
+      return reportEstimatedRenderProgress(renderJob, "in_progress");
     }
 
-    return {
-      status: "completed" as const,
-      progress: 100
-    };
+    return reportCompletedRenderProgress(renderJob);
   }
 
   if (interaction.status === "completed") {
@@ -658,10 +675,12 @@ export async function reconcileRenderJob(renderJobId: string) {
     );
     const failed = Boolean(failureResult && failureResult.failed);
 
-    return {
-      status: failed ? ("failed" as const) : ("in_progress" as const),
-      progress: null
-    };
+    return failed
+      ? {
+          status: "failed" as const,
+          progress: null
+        }
+      : reportEstimatedRenderProgress(renderJob, "in_progress");
   }
 
   if (
@@ -689,10 +708,12 @@ export async function reconcileRenderJob(renderJobId: string) {
     );
     const failed = Boolean(failureResult && failureResult.failed);
 
-    return {
-      status: failed ? ("failed" as const) : ("in_progress" as const),
-      progress: null
-    };
+    return failed
+      ? {
+          status: "failed" as const,
+          progress: null
+        }
+      : reportEstimatedRenderProgress(renderJob, "in_progress");
   }
 
   const mappedStatus = interaction.status === "queued" ? "queued" : "in_progress";
@@ -710,10 +731,7 @@ export async function reconcileRenderJob(renderJobId: string) {
     }
   });
 
-  return {
-    status: mappedStatus,
-    progress: null
-  };
+  return reportEstimatedRenderProgress(renderJob, mappedStatus);
 }
 
 export async function failRenderJob(

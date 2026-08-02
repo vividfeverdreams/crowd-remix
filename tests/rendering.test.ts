@@ -41,6 +41,9 @@ const testDoubles = vi.hoisted(() => {
     promoteOldestReadyAsset: vi.fn(),
     takePlaybackAsset: vi.fn(async () => true),
     recordAuditEvent: vi.fn(),
+    recordRenderJobProgress: vi.fn(
+      async (_sessionId: string, _renderJobId: string, progress: number) => progress
+    ),
     transaction
   };
 });
@@ -51,6 +54,10 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/audit", () => ({
   recordAuditEvent: testDoubles.recordAuditEvent
+}));
+
+vi.mock("@/lib/render-progress-state", () => ({
+  recordRenderJobProgress: testDoubles.recordRenderJobProgress
 }));
 
 vi.mock("@/lib/playback-queue", () => ({
@@ -519,6 +526,11 @@ describe("Gemini Omni video requests", () => {
       status: "completed",
       progress: 100
     });
+    expect(testDoubles.recordRenderJobProgress).toHaveBeenCalledWith(
+      "session-1",
+      "render-1",
+      100
+    );
 
     expect(testDoubles.persistVideoAsset).toHaveBeenCalledWith(
       "asset-1",
@@ -561,10 +573,19 @@ describe("Gemini Omni video requests", () => {
       }
     });
 
-    await expect(reconcileRenderJob("render-starting")).resolves.toEqual({
+    const result = await reconcileRenderJob("render-starting");
+
+    expect(result).toEqual({
       status: "queued",
-      progress: null
+      progress: expect.any(Number)
     });
+    expect(result?.progress).toBeGreaterThan(0);
+    expect(result?.progress).toBeLessThan(100);
+    expect(testDoubles.recordRenderJobProgress).toHaveBeenCalledWith(
+      "session-1",
+      "render-starting",
+      result?.progress
+    );
 
     expect(testDoubles.transaction.renderJob.update).not.toHaveBeenCalled();
     expect(testDoubles.transaction.visualAsset.update).not.toHaveBeenCalled();
@@ -622,7 +643,7 @@ describe("Gemini Omni video requests", () => {
         reconcileRenderJob("render-transient")
       ).resolves.toEqual({
         status: "in_progress",
-        progress: null
+        progress: expect.any(Number)
       });
 
       expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({
@@ -673,7 +694,7 @@ describe("Gemini Omni video requests", () => {
 
     await expect(reconcileRenderJob("render-network")).resolves.toEqual({
       status: "in_progress",
-      progress: null
+      progress: expect.any(Number)
     });
     expect(testDoubles.db.$transaction).not.toHaveBeenCalled();
   });
@@ -901,7 +922,7 @@ describe("Gemini Omni video requests", () => {
 
     await expect(reconcileRenderJob("render-1")).resolves.toEqual({
       status: "in_progress",
-      progress: null
+      progress: expect.any(Number)
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1182,7 +1203,7 @@ describe("Gemini Omni video requests", () => {
 
     await expect(reconcileRenderJob("render-1")).resolves.toEqual({
       status: "in_progress",
-      progress: null
+      progress: expect.any(Number)
     });
     expect(testDoubles.persistVideoAsset).not.toHaveBeenCalled();
   });
