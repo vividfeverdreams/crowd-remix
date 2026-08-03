@@ -77,20 +77,20 @@ describe("dashboard fullscreen show", () => {
     );
   });
 
-  it("recognizes only the dashboard show iframe as fullscreen", () => {
-    const frame = {} as HTMLIFrameElement;
+  it("recognizes only the dashboard show surface as fullscreen", () => {
+    const surface = {} as HTMLElement;
     const otherElement = {} as Element;
 
-    expect(isDashboardShowFullscreen(frame, frame)).toBe(true);
-    expect(isDashboardShowFullscreen(otherElement, frame)).toBe(false);
+    expect(isDashboardShowFullscreen(surface, surface)).toBe(true);
+    expect(isDashboardShowFullscreen(otherElement, surface)).toBe(false);
     expect(isDashboardShowFullscreen(null, null)).toBe(false);
   });
 
-  it("requests fullscreen directly on the dashboard show iframe", async () => {
+  it("requests fullscreen on the stable dashboard show surface", async () => {
     const requestFullscreen = vi.fn().mockResolvedValue(undefined);
-    const frame = { requestFullscreen } as unknown as HTMLIFrameElement;
+    const surface = { requestFullscreen } as unknown as HTMLElement;
 
-    await requestDashboardShowFullscreen(frame);
+    await requestDashboardShowFullscreen(surface);
 
     expect(requestFullscreen).toHaveBeenCalledOnce();
     expect(requestFullscreen).toHaveBeenCalledWith();

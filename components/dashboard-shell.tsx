@@ -102,13 +102,13 @@ export function getDashboardShowFrameSource(
 
 export function isDashboardShowFullscreen(
   fullscreenElement: Element | null,
-  showFrame: HTMLIFrameElement | null
+  showSurface: HTMLElement | null
 ) {
-  return fullscreenElement !== null && fullscreenElement === showFrame;
+  return fullscreenElement !== null && fullscreenElement === showSurface;
 }
 
 export async function requestDashboardShowFullscreen(
-  target: HTMLIFrameElement | null
+  target: HTMLElement | null
 ) {
   if (!target?.requestFullscreen) {
     throw new Error("Fullscreen is not supported in this browser.");
@@ -145,7 +145,7 @@ export function DashboardShell({
     boolean | null
   >(null);
   const generationMenuRef = useRef<HTMLDetailsElement>(null);
-  const liveMonitorRef = useRef<HTMLIFrameElement>(null);
+  const fullscreenShowSurfaceRef = useRef<HTMLDivElement>(null);
   const reconciliationInFlightRef = useRef(false);
   const submittedWordmarkOpacityRef = useRef(initialSnapshot.session.wordmarkOpacity);
   const submittedWordmarkSizeRef = useRef(initialSnapshot.session.wordmarkSize);
@@ -278,7 +278,7 @@ export function DashboardShell({
       setFullscreenShowActive(
         isDashboardShowFullscreen(
           document.fullscreenElement,
-          liveMonitorRef.current
+          fullscreenShowSurfaceRef.current
         )
       );
     };
@@ -583,7 +583,7 @@ export function DashboardShell({
 
   async function enterFullscreenShow() {
     try {
-      await requestDashboardShowFullscreen(liveMonitorRef.current);
+      await requestDashboardShowFullscreen(fullscreenShowSurfaceRef.current);
       setShowWindowFeedback(
         "Fullscreen show active. Press Escape when you want to return to the dashboard."
       );
@@ -756,9 +756,12 @@ export function DashboardShell({
               </p>
             </div>
 
-            <div className="aspect-video bg-black">
+            <div
+              ref={fullscreenShowSurfaceRef}
+              data-dashboard-show-surface
+              className="aspect-video bg-black"
+            >
               <iframe
-                ref={liveMonitorRef}
                 src={getDashboardShowFrameSource(showLink, fullscreenShowActive)}
                 title="Live show monitor"
                 className="h-full w-full border-0"
