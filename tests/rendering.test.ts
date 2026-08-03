@@ -77,6 +77,14 @@ vi.mock("@/lib/google-key-store", () => ({
   getEffectiveGeminiApiKeyForUser: testDoubles.getEffectiveGeminiApiKeyForUser
 }));
 
+vi.mock("@/lib/env", () => ({
+  env: {
+    geminiVideoModel: "gemini-omni-flash-preview",
+    runwayApiSecret: "test-runway-key",
+    runwayVideoModel: "gemini_omni_flash"
+  }
+}));
+
 import {
   completeGeminiVideoRender,
   failRenderJob,
@@ -90,6 +98,381 @@ describe("Gemini Omni video requests", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it("prefers Runway when a Runway API key is supplied", async () => {
+    const taskId = "11111111-1111-4111-8111-111111111111";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: taskId
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      startVideoRender({
+        mode: "seed",
+        prompt: "Slow liquid chrome waves",
+        runwayApiKey: "test-runway-key",
+        geminiApiKey: "test-gemini-key",
+        durationSeconds: 6
+      })
+    ).resolves.toEqual({
+      kind: "live",
+      requestId: taskId,
+      outputUri: null,
+      strategy: "runway_text_to_video"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.dev.runwayml.com/v1/text_to_video"
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+
+    expect(request).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Accept: "application/json",
+          Authorization: "Bearer test-runway-key",
+          "Content-Type": "application/json",
+          "X-Runway-Version": "2024-11-06"
+        })
+      })
+    );
+    expect(JSON.parse(String(request.body))).toEqual({
+      model: "gemini_omni_flash",
+      promptText: "Slow liquid chrome waves",
+      ratio: "1280:720",
+      duration: 6
+    });
+  });
+
+  it("keeps a pending Runway task queued", async () => {
+    const taskId = "22222222-2222-4222-8222-222222222222";
+    const createdAt = new Date();
+
+    testDoubles.db.renderJob.findUnique.mockResolvedValue({
+      id: "render-runway-pending",
+      sessionId: "session-1",
+      submissionId: null,
+      providerRequestId: taskId,
+      providerOutputUri: null,
+      providerStrategy: "runway_text_to_video",
+      status: "queued",
+      createdAt,
+      outputAsset: {
+        id: "asset-runway-pending"
+      },
+      session: {
+        userId: "user-1",
+        playbackState: {
+          id: "playback-1",
+          currentAssetId: null
+        }
+      }
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: taskId,
+          createdAt: createdAt.toISOString(),
+          status: "PENDING"
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      reconcileRenderJob("render-runway-pending")
+    ).resolves.toEqual({
+      status: "queued",
+      progress: expect.any(Number)
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `https://api.dev.runwayml.com/v1/tasks/${taskId}`
+    );
+    expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "render-runway-pending",
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "queued",
+        lastPolledAt: expect.any(Date)
+      }
+    });
+    expect(testDoubles.persistVideoAsset).not.toHaveBeenCalled();
+    expect(testDoubles.getEffectiveGeminiApiKeyForUser).not.toHaveBeenCalled();
+  });
+
+  it("uses Runway task progress while a render is running", async () => {
+    const taskId = "55555555-5555-4555-8555-555555555555";
+    const createdAt = new Date();
+
+    testDoubles.db.renderJob.findUnique.mockResolvedValue({
+      id: "render-runway-running",
+      sessionId: "session-1",
+      submissionId: null,
+      providerRequestId: taskId,
+      providerOutputUri: null,
+      providerStrategy: "runway_video_to_video",
+      status: "in_progress",
+      createdAt,
+      outputAsset: {
+        id: "asset-runway-running"
+      },
+      session: {
+        userId: "user-1",
+        playbackState: {
+          id: "playback-1",
+          currentAssetId: "asset-current"
+        }
+      }
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: taskId,
+            createdAt: createdAt.toISOString(),
+            status: "RUNNING",
+            progress: 0.42
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+    );
+
+    await expect(
+      reconcileRenderJob("render-runway-running")
+    ).resolves.toEqual({
+      status: "in_progress",
+      progress: 42
+    });
+    expect(testDoubles.recordRenderJobProgress).toHaveBeenCalledWith(
+      "session-1",
+      "render-runway-running",
+      42
+    );
+  });
+
+  it("downloads and publishes a successful Runway task", async () => {
+    const taskId = "33333333-3333-4333-8333-333333333333";
+    const outputUri = "https://cdn.example.com/runway-output.mp4";
+    const createdAt = new Date();
+
+    testDoubles.persistVideoAsset.mockResolvedValue({
+      publicUrl: "https://cdn.example.com/persisted-runway.mp4",
+      storagePath: "renders/asset-runway-success.mp4"
+    });
+    testDoubles.transaction.playbackState.updateMany.mockResolvedValue({
+      count: 1
+    });
+    testDoubles.db.renderJob.findUnique
+      .mockResolvedValueOnce({
+        id: "render-runway-success",
+        sessionId: "session-1",
+        submissionId: null,
+        providerRequestId: taskId,
+        providerOutputUri: null,
+        providerStrategy: "runway_video_to_video",
+        status: "in_progress",
+        createdAt,
+        outputAsset: {
+          id: "asset-runway-success"
+        },
+        session: {
+          userId: "user-1",
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: null
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        id: "render-runway-success",
+        sessionId: "session-1",
+        submissionId: null,
+        status: "in_progress",
+        session: {
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: null
+          }
+        },
+        submission: null
+      });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: taskId,
+            createdAt: createdAt.toISOString(),
+            status: "SUCCEEDED",
+            output: [outputUri]
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([4, 5, 6]), {
+          status: 200,
+          headers: {
+            "Content-Type": "video/mp4"
+          }
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      reconcileRenderJob("render-runway-success")
+    ).resolves.toEqual({
+      status: "completed",
+      progress: 100
+    });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(outputUri);
+    expect(testDoubles.persistVideoAsset).toHaveBeenCalledWith(
+      "asset-runway-success",
+      Buffer.from([4, 5, 6])
+    );
+    expect(testDoubles.transaction.visualAsset.update).toHaveBeenCalledWith({
+      where: {
+        id: "asset-runway-success"
+      },
+      data: {
+        status: "ready",
+        publicUrl: "https://cdn.example.com/persisted-runway.mp4",
+        storagePath: "renders/asset-runway-success.mp4",
+        sourceVideoId: taskId
+      }
+    });
+    expect(testDoubles.recordRenderJobProgress).toHaveBeenCalledWith(
+      "session-1",
+      "render-runway-success",
+      100
+    );
+  });
+
+  it("treats a Runway SAFETY failure as a moderation block", async () => {
+    const taskId = "44444444-4444-4444-8444-444444444444";
+    const createdAt = new Date();
+
+    testDoubles.db.renderJob.findUnique
+      .mockResolvedValueOnce({
+        id: "render-runway-safety",
+        sessionId: "session-1",
+        submissionId: null,
+        providerRequestId: taskId,
+        providerOutputUri: null,
+        providerStrategy: "runway_video_to_video",
+        status: "in_progress",
+        createdAt,
+        outputAsset: {
+          id: "asset-runway-safety"
+        },
+        session: {
+          userId: "user-1",
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: "asset-current"
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        id: "render-runway-safety",
+        outputAssetId: "asset-runway-safety",
+        submissionId: null,
+        sessionId: "session-1",
+        status: "in_progress",
+        submission: null
+      });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: taskId,
+            createdAt: createdAt.toISOString(),
+            status: "FAILED",
+            failure: "The input prompt was rejected by content moderation.",
+            failureCode: "SAFETY.INPUT.TEXT"
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+    );
+
+    await expect(
+      reconcileRenderJob("render-runway-safety")
+    ).resolves.toEqual({
+      status: "failed",
+      progress: null
+    });
+
+    expect(testDoubles.transaction.renderJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "render-runway-safety",
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "failed",
+        failureReason: expect.stringContaining(videoModerationBlockedReason),
+        lastPolledAt: expect.any(Date)
+      }
+    });
+    expect(testDoubles.transaction.visualAsset.update).toHaveBeenCalledWith({
+      where: {
+        id: "asset-runway-safety"
+      },
+      data: {
+        status: "failed"
+      }
+    });
+    expect(testDoubles.persistVideoAsset).not.toHaveBeenCalled();
   });
 
   it("keeps the demo fallback active until a Gemini key is configured", async () => {

@@ -62,7 +62,7 @@ export function getInitialGenerationPresentation(input: {
       failed: true,
       failureReason:
         input.seedJob.failureReason ||
-        "Gemini Omni could not finish the first video. Retry the generation."
+        "The video renderer could not finish the first video. Retry the generation."
     };
   }
 
@@ -654,7 +654,7 @@ export function DashboardShell({
           {!googleStatus.configured ? (
             <StatusNotice
               title="Demo Mode Active"
-              body="No GEMINI_API_KEY environment variable is active right now, so the app is using the demo loop fallback instead of Gemini Omni video generation."
+              body="No video generation API key is active right now, so the app is using the demo loop fallback."
             />
           ) : null}
         </section>
@@ -962,7 +962,7 @@ export function DashboardShell({
                 <div className="max-w-xl">
                   <p className="text-sm font-semibold text-white/88">Next-remix progress overlay</p>
                   <p className="mt-1 text-xs leading-5 text-white/52">
-                    Show “DREAM SEQUENCE” and the current Gemini Omni render activity across the top of the live visual.
+                    Show “DREAM SEQUENCE” and the current video render activity across the top of the live visual.
                   </p>
                 </div>
 
@@ -1052,14 +1052,16 @@ export function DashboardShell({
           <DashboardDisclosure
             eyebrow="System"
             title="AI Environment"
-            description="Current Gemini Omni video and OpenAI text-scoring configuration."
+            description="Current video generation and OpenAI text-scoring configuration."
             status={googleStatus.configured ? "Connected" : "Demo"}
             statusActive={googleStatus.configured}
           >
             <p className="text-sm leading-7 text-white/72">
               {googleStatus.source === "env"
-                ? `Using GEMINI_API_KEY from the local environment${googleStatus.last4 ? ` ending in ${googleStatus.last4}` : ""} for Gemini Omni seed and remix video calls.`
-                : "No GEMINI_API_KEY environment variable is configured, so video rendering is using the demo fallback."}
+                ? googleStatus.provider === "runway"
+                  ? `Using Runway for Gemini Omni seed and remix video calls${googleStatus.last4 ? ` with a key ending in ${googleStatus.last4}` : ""}.`
+                  : `Using the legacy direct Gemini connection${googleStatus.last4 ? ` with a key ending in ${googleStatus.last4}` : ""} for seed and remix video calls.`
+                : "No video generation API key is configured, so video rendering is using the demo fallback."}
             </p>
             <p className="mt-3 text-sm leading-7 text-white/60">
               {openAiStatus.source === "env"
@@ -1067,7 +1069,7 @@ export function DashboardShell({
                 : "OpenAI text scoring is not configured, so moderation and ranking use the built-in fallback behavior."}
             </p>
             <div className="mt-5 rounded-3xl border border-white/10 bg-black/20 px-4 py-4 text-sm leading-7 text-white/72">
-              Set `GEMINI_API_KEY` for video generation and `OPENAI_API_KEY` for AI-assisted moderation, ranking, and session setup. The dashboard never stores or edits API keys.
+              Set `RUNWAYML_API_SECRET` for video generation and `OPENAI_API_KEY` for AI-assisted moderation, ranking, and session setup. The dashboard never stores or edits API keys.
             </div>
           </DashboardDisclosure>
 
@@ -1113,7 +1115,7 @@ export function DashboardShell({
           <DashboardDisclosure
             eyebrow="Generation"
             title="Render Jobs"
-            description="Inspect active Gemini Omni jobs and recent completed or failed renders."
+            description="Inspect active video jobs and recent completed or failed renders."
             status={renderJobsStatus}
             statusActive={Boolean(activeRenderJob)}
           >
@@ -1166,6 +1168,17 @@ export function DashboardShell({
           </DashboardDisclosure>
         </div>
       </section>
+
+      <footer className="mt-10 flex justify-center border-t border-white/10 pt-6">
+        <a
+          href="https://runwayml.com/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-mono text-[10px] uppercase tracking-[0.24em] text-white/45 transition hover:text-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-plasma"
+        >
+          Powered by Runway
+        </a>
+      </footer>
     </main>
   );
 }
@@ -1188,8 +1201,8 @@ function InitialGenerationStatus({
   const stage = isStarting
     ? "Starting the generation job…"
     : job?.status === "queued"
-      ? "Queued with Gemini Omni — waiting for rendering to begin…"
-      : "Gemini Omni is rendering your first loop…";
+      ? "Queued for video generation — waiting for rendering to begin…"
+      : "The video renderer is creating your first loop…";
 
   return (
     <section
@@ -1217,7 +1230,7 @@ function InitialGenerationStatus({
             <p className="mt-2 max-w-2xl text-sm leading-7 text-white/70">
               {failed
                 ? failureReason ||
-                  "Gemini Omni could not finish this render. Retry the generation."
+                  "The video renderer could not finish this render. Retry the generation."
                 : `${stage} You can keep this dashboard open; the first video will load automatically when it is ready.`}
             </p>
           </div>

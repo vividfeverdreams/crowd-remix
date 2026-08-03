@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { env } from "@/lib/env";
 import { assessSubmission } from "@/lib/ai-assessment";
 import { checkSubmissionRateLimit } from "@/lib/rate-limit";
 import { recordAuditEvent } from "@/lib/audit";
@@ -638,6 +639,7 @@ export async function queueAutomatedRender(
         mode === "remix"
           ? sourceSubmission?.referenceImageUrl
           : null,
+      runwayApiKey: env.runwayApiSecret,
       geminiApiKey,
       durationSeconds
     });
@@ -659,7 +661,7 @@ export async function queueAutomatedRender(
     await recordAuditEvent({
       type: moderationBlocked ? "render.moderation_blocked" : "render.start_failed",
       summary: moderationBlocked
-        ? "Gemini Omni moderation blocked a remix before rendering"
+        ? "Video provider moderation blocked a remix before rendering"
         : "Could not start a remix render",
       details: failureReason,
       sessionId

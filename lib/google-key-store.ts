@@ -2,6 +2,7 @@ import { env } from "@/lib/env";
 
 export type GoogleConnectionStatus = {
   configured: boolean;
+  provider: "runway" | "gemini" | "demo";
   source: "env" | "none";
   last4: string | null;
 };
@@ -17,9 +18,19 @@ export async function getEffectiveGeminiApiKeyForUser(_userId: string) {
 export async function getGoogleConnectionStatusForUser(
   _userId: string
 ): Promise<GoogleConnectionStatus> {
+  if (env.runwayApiSecret) {
+    return {
+      configured: true,
+      provider: "runway",
+      source: "env",
+      last4: maskLast4(env.runwayApiSecret)
+    };
+  }
+
   if (env.geminiApiKey) {
     return {
       configured: true,
+      provider: "gemini",
       source: "env",
       last4: maskLast4(env.geminiApiKey)
     };
@@ -27,6 +38,7 @@ export async function getGoogleConnectionStatusForUser(
 
   return {
     configured: false,
+    provider: "demo",
     source: "none",
     last4: null
   };

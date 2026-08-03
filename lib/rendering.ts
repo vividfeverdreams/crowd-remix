@@ -11,12 +11,22 @@ import { promoteOldestReadyAsset } from "@/lib/playback-queue";
 import { takePlaybackAsset } from "@/lib/playback-transition";
 import { estimateVideoRenderProgress } from "@/lib/render-progress";
 import { recordRenderJobProgress } from "@/lib/render-progress-state";
+import {
+  downloadRunwayVideo,
+  isRetryableRunwayError,
+  isRunwayModerationError,
+  retrieveRunwayTask,
+  RunwayApiError,
+  startRunwayVideoRender,
+  type RunwayTask
+} from "@/lib/runway-video";
 import { getDemoLoopUrl, persistVideoAsset } from "@/lib/storage";
 import { formatVideoDuration } from "@/lib/video-duration";
 
 const geminiInteractionsUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const geminiApiRevision = "2026-05-20";
 const staleGeminiRenderMs = 2 * 60 * 1_000;
+const staleRunwayRenderMs = 30 * 60 * 1_000;
 
 type StartRenderInput = {
   mode: "seed" | "remix";
@@ -25,6 +35,7 @@ type StartRenderInput = {
   sourceVideoUrl?: string | null;
   imageReferenceUrl?: string | null;
   remixReferenceImageUrl?: string | null;
+  runwayApiKey?: string | null;
   geminiApiKey?: string | null;
   durationSeconds?: number | null;
 };
@@ -40,7 +51,13 @@ type StartedRender =
       kind: "live";
       requestId: string;
       outputUri: string | null;
-      strategy: "seed" | "stateful_edit" | "uploaded_edit";
+      strategy:
+        | "seed"
+        | "stateful_edit"
+        | "uploaded_edit"
+        | "runway_text_to_video"
+        | "runway_image_to_video"
+        | "runway_video_to_video";
     };
 
 type GeminiVideoContent = {
@@ -96,6 +113,8 @@ type GeminiInteractionStreamEvent = {
 };
 
 export const videoModerationBlockedReason =
+  "The video provider blocked this render during moderation.";
+const legacyGeminiModerationBlockedReason =
   "Gemini Omni blocked this render during video moderation.";
 const legacyGrokModerationBlockedReason =
   "Grok Imagine blocked this render during video moderation.";
@@ -123,6 +142,7 @@ class GeminiVideoApiError extends Error {
 
 export function isVideoModerationError(error: unknown) {
   return (
+    isRunwayModerationError(error) ||
     (error instanceof GeminiVideoApiError && error.moderationBlocked) ||
     (error instanceof Error && isVideoModerationFailure(null, error.message))
   );
@@ -133,7 +153,11 @@ export function isVideoModerationFailureReason(
 ) {
   return Boolean(
     failureReason &&
-      [videoModerationBlockedReason, legacyGrokModerationBlockedReason].some(
+      [
+        videoModerationBlockedReason,
+        legacyGeminiModerationBlockedReason,
+        legacyGrokModerationBlockedReason
+      ].some(
         (reason) => failureReason === reason || failureReason.startsWith(`${reason} `)
       )
   );
@@ -166,6 +190,32 @@ function isRetryableGeminiReconciliationError(error: unknown) {
 }
 
 export async function startVideoRender(input: StartRenderInput): Promise<StartedRender> {
+  if (input.runwayApiKey) {
+    const started = await startRunwayVideoRender({
+      mode: input.mode,
+      prompt: input.prompt,
+      sourceVideoUrl: input.sourceVideoUrl,
+      imageReferenceUrl: input.imageReferenceUrl,
+      remixReferenceImageUrl: input.remixReferenceImageUrl,
+      apiKey: input.runwayApiKey,
+      durationSeconds: input.durationSeconds,
+      model: env.runwayVideoModel
+    });
+
+    console.info("[render-job] Runway task started", {
+      taskId: started.requestId,
+      mode: input.mode,
+      strategy: started.strategy
+    });
+
+    return {
+      kind: "live",
+      requestId: started.requestId,
+      outputUri: null,
+      strategy: started.strategy
+    };
+  }
+
   if (!input.geminiApiKey) {
     return {
       kind: "demo",
@@ -433,28 +483,6 @@ export async function reconcileRenderJob(renderJobId: string) {
     };
   }
 
-  const apiKey = renderJob.session?.userId
-    ? await getEffectiveGeminiApiKeyForUser(String(renderJob.session.userId))
-    : null;
-
-  if (!apiKey) {
-    const completed = await markRenderJobReady(
-      renderJob.id,
-      renderJob.outputAsset.id,
-      {
-      publicUrl: getDemoLoopUrl(),
-      storagePath: null,
-      sourceVideoId: renderJob.providerRequestId ?? `demo_${renderJob.id}`
-      }
-    );
-
-    if (!completed) {
-      return reportEstimatedRenderProgress(renderJob, "in_progress");
-    }
-
-    return reportCompletedRenderProgress(renderJob);
-  }
-
   if (!renderJob.providerRequestId) {
     const renderAgeMs =
       renderJob.createdAt instanceof Date
@@ -470,7 +498,7 @@ export async function reconcileRenderJob(renderJobId: string) {
 
     const failureResult = await failRenderJob(
       renderJob.id,
-      "Render job never received a Gemini interaction ID."
+      "Render job never received a provider task ID."
     );
     const failed = Boolean(failureResult && failureResult.failed);
 
@@ -480,6 +508,36 @@ export async function reconcileRenderJob(renderJobId: string) {
           progress: 0
         }
       : reportEstimatedRenderProgress(renderJob, "in_progress");
+  }
+
+  if (renderJob.providerStrategy?.startsWith("runway_")) {
+    return reconcileRunwayRenderJob(
+      renderJob,
+      renderJob.providerRequestId,
+      renderJob.outputAsset.id
+    );
+  }
+
+  const apiKey = renderJob.session?.userId
+    ? await getEffectiveGeminiApiKeyForUser(String(renderJob.session.userId))
+    : null;
+
+  if (!apiKey) {
+    const completed = await markRenderJobReady(
+      renderJob.id,
+      renderJob.outputAsset.id,
+      {
+        publicUrl: getDemoLoopUrl(),
+        storagePath: null,
+        sourceVideoId: renderJob.providerRequestId ?? `demo_${renderJob.id}`
+      }
+    );
+
+    if (!completed) {
+      return reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+
+    return reportCompletedRenderProgress(renderJob);
   }
 
   if (renderJob.providerOutputUri) {
@@ -732,6 +790,266 @@ export async function reconcileRenderJob(renderJobId: string) {
   });
 
   return reportEstimatedRenderProgress(renderJob, mappedStatus);
+}
+
+type RunwayBackedRenderJob = ProgressRenderJob & {
+  providerRequestId: string | null;
+  providerStrategy: string | null;
+  outputAsset: {
+    id: string;
+  } | null;
+};
+
+async function reconcileRunwayRenderJob(
+  renderJob: RunwayBackedRenderJob,
+  providerRequestId: string,
+  outputAssetId: string
+) {
+  const renderAgeMs = Date.now() - renderJob.createdAt.getTime();
+
+  if (!env.runwayApiSecret) {
+    const failureResult = await failRenderJob(
+      renderJob.id,
+      "Runway video generation is not configured on the server."
+    );
+
+    return failureResult && failureResult.failed
+      ? {
+          status: "failed" as const,
+          progress: null
+        }
+      : reportEstimatedRenderProgress(renderJob, "in_progress");
+  }
+
+  let task: RunwayTask;
+
+  try {
+    task = await retrieveRunwayTask(
+      providerRequestId,
+      env.runwayApiSecret
+    );
+  } catch (error) {
+    const failureReason =
+      error instanceof Error
+        ? error.message
+        : "Runway could not return this render task.";
+
+    if (
+      isRetryableRunwayError(error) &&
+      renderAgeMs < staleRunwayRenderMs
+    ) {
+      console.warn("[render-job] transient Runway reconciliation failure", {
+        sessionId: renderJob.sessionId,
+        renderJobId: renderJob.id,
+        providerStatus:
+          error instanceof RunwayApiError ? error.status : null,
+        failureReason
+      });
+      await updateRunwayRenderStatus(renderJob, "in_progress");
+      return reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+
+    console.error("[render-job] Runway reconciliation failed", {
+      sessionId: renderJob.sessionId,
+      renderJobId: renderJob.id,
+      providerStatus: error instanceof RunwayApiError ? error.status : null,
+      failureReason
+    });
+
+    const moderationBlocked = isRunwayModerationError(error);
+    const failureResult = await failRenderJob(
+      renderJob.id,
+      moderationBlocked
+        ? formatVideoModerationFailureReason(failureReason)
+        : failureReason,
+      {
+        moderationBlocked
+      }
+    );
+
+    return failureResult && failureResult.failed
+      ? {
+          status: "failed" as const,
+          progress: null
+        }
+      : reportEstimatedRenderProgress(renderJob, "in_progress");
+  }
+
+  if (task.status === "PENDING" || task.status === "THROTTLED") {
+    if (renderAgeMs >= staleRunwayRenderMs) {
+      const failureResult = await failRenderJob(
+        renderJob.id,
+        "Runway did not begin this render before the recovery timeout."
+      );
+
+      return failureResult && failureResult.failed
+        ? {
+            status: "failed" as const,
+            progress: null
+          }
+        : reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+
+    await updateRunwayRenderStatus(renderJob, "queued");
+    return reportEstimatedRenderProgress(renderJob, "queued");
+  }
+
+  if (task.status === "RUNNING") {
+    if (renderAgeMs >= staleRunwayRenderMs) {
+      const failureResult = await failRenderJob(
+        renderJob.id,
+        "Runway did not finish this render before the recovery timeout."
+      );
+
+      return failureResult && failureResult.failed
+        ? {
+            status: "failed" as const,
+            progress: null
+          }
+        : reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+
+    await updateRunwayRenderStatus(renderJob, "in_progress");
+    return reportRunwayRenderProgress(renderJob, task.progress ?? 0);
+  }
+
+  if (task.status === "SUCCEEDED") {
+    const outputUri = task.output?.find(
+      (value): value is string => typeof value === "string" && value.length > 0
+    );
+
+    if (!outputUri) {
+      const failureResult = await failRenderJob(
+        renderJob.id,
+        "Runway completed without returning a video."
+      );
+
+      return failureResult && failureResult.failed
+        ? {
+            status: "failed" as const,
+            progress: null
+          }
+        : reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+
+    const persistenceClaim = await db.renderJob.updateMany({
+      where: {
+        id: renderJob.id,
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        providerOutputUri: outputUri,
+        status: "in_progress",
+        lastPolledAt: new Date()
+      }
+    });
+
+    if (persistenceClaim.count !== 1) {
+      return reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+
+    try {
+      const buffer = await downloadRunwayVideo(outputUri);
+      const saved = await persistVideoAsset(outputAssetId, buffer);
+      const completed = await markRenderJobReady(
+        renderJob.id,
+        outputAssetId,
+        {
+          publicUrl: saved.publicUrl,
+          storagePath: saved.storagePath,
+          sourceVideoId: providerRequestId
+        }
+      );
+
+      return completed
+        ? reportCompletedRenderProgress(renderJob)
+        : reportEstimatedRenderProgress(renderJob, "in_progress");
+    } catch (error) {
+      const failureReason =
+        error instanceof Error
+          ? error.message
+          : "Runway video download failed.";
+
+      if (renderAgeMs < staleRunwayRenderMs) {
+        console.warn("[render-job] completed Runway output is not downloadable yet", {
+          sessionId: renderJob.sessionId,
+          renderJobId: renderJob.id,
+          failureReason
+        });
+        return reportEstimatedRenderProgress(renderJob, "in_progress");
+      }
+
+      const failureResult = await failRenderJob(renderJob.id, failureReason);
+      return failureResult && failureResult.failed
+        ? {
+            status: "failed" as const,
+            progress: null
+          }
+        : reportEstimatedRenderProgress(renderJob, "in_progress");
+    }
+  }
+
+  const providerMessage = task.failure?.trim();
+  const moderationBlocked =
+    task.failureCode?.startsWith("SAFETY") ||
+    isVideoModerationFailure(task.failureCode, providerMessage);
+  const failureReason =
+    providerMessage ||
+    `Runway reported a ${task.status.toLowerCase()} render${
+      task.failureCode ? ` (${task.failureCode})` : ""
+    }.`;
+  const failureResult = await failRenderJob(
+    renderJob.id,
+    moderationBlocked
+      ? formatVideoModerationFailureReason(failureReason)
+      : failureReason,
+    {
+      moderationBlocked
+    }
+  );
+
+  return failureResult && failureResult.failed
+    ? {
+        status: "failed" as const,
+        progress: null
+      }
+    : reportEstimatedRenderProgress(renderJob, "in_progress");
+}
+
+async function updateRunwayRenderStatus(
+  renderJob: ProgressRenderJob,
+  status: "queued" | "in_progress"
+) {
+  await db.renderJob.updateMany({
+    where: {
+      id: renderJob.id,
+      status: {
+        in: ["queued", "in_progress"]
+      }
+    },
+    data: {
+      status,
+      lastPolledAt: new Date()
+    }
+  });
+}
+
+async function reportRunwayRenderProgress(
+  renderJob: ProgressRenderJob,
+  providerProgress: number
+) {
+  const progress = await recordRenderJobProgress(
+    renderJob.sessionId,
+    renderJob.id,
+    Math.min(95, Math.max(0, Math.round(providerProgress * 100)))
+  );
+
+  return {
+    status: "in_progress" as const,
+    progress
+  };
 }
 
 export async function failRenderJob(
