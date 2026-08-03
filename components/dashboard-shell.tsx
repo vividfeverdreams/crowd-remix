@@ -93,6 +93,30 @@ export function shouldReconcileSession({
   );
 }
 
+export function getDashboardShowFrameSource(
+  showLink: string,
+  fullscreenActive: boolean
+) {
+  return fullscreenActive ? showLink : `${showLink}?monitor=1`;
+}
+
+export function isDashboardShowFullscreen(
+  fullscreenElement: Element | null,
+  showFrame: HTMLIFrameElement | null
+) {
+  return fullscreenElement !== null && fullscreenElement === showFrame;
+}
+
+export async function requestDashboardShowFullscreen(
+  target: HTMLIFrameElement | null
+) {
+  if (!target?.requestFullscreen) {
+    throw new Error("Fullscreen is not supported in this browser.");
+  }
+
+  await target.requestFullscreen();
+}
+
 export function DashboardShell({
   initialSnapshot,
   currentUserName,
@@ -105,6 +129,7 @@ export function DashboardShell({
   const [controlFeedback, setControlFeedback] = useState<string | null>(null);
   const [showWindowFeedback, setShowWindowFeedback] = useState<string | null>(null);
   const [showUrlDisplay, setShowUrlDisplay] = useState("");
+  const [fullscreenShowActive, setFullscreenShowActive] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [renderProgress, setRenderProgress] = useState<Record<string, number>>({});
   const [pendingQrOverlayVisibility, setPendingQrOverlayVisibility] = useState<boolean | null>(null);
@@ -120,6 +145,7 @@ export function DashboardShell({
     boolean | null
   >(null);
   const generationMenuRef = useRef<HTMLDetailsElement>(null);
+  const liveMonitorRef = useRef<HTMLIFrameElement>(null);
   const reconciliationInFlightRef = useRef(false);
   const submittedWordmarkOpacityRef = useRef(initialSnapshot.session.wordmarkOpacity);
   const submittedWordmarkSizeRef = useRef(initialSnapshot.session.wordmarkSize);
@@ -246,6 +272,24 @@ export function DashboardShell({
   useEffect(() => {
     setShowUrlDisplay(resolveAbsoluteUrl(showLink));
   }, [showLink]);
+
+  useEffect(() => {
+    const syncFullscreenShowState = () => {
+      setFullscreenShowActive(
+        isDashboardShowFullscreen(
+          document.fullscreenElement,
+          liveMonitorRef.current
+        )
+      );
+    };
+
+    syncFullscreenShowState();
+    document.addEventListener("fullscreenchange", syncFullscreenShowState);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenShowState);
+    };
+  }, []);
 
   useEffect(() => {
     if (pendingQrOverlayVisibility === session.qrOverlayVisible) {
@@ -528,13 +572,28 @@ export function DashboardShell({
       popup.moveTo(0, 0);
       popup.resizeTo(window.screen.availWidth, window.screen.availHeight);
       popup.focus();
-      setShowWindowFeedback("Show window opened. Click Enter Fullscreen inside it to hide all browser controls.");
+      setShowWindowFeedback("Show window opened without dashboard controls or fullscreen prompts.");
       return;
     }
 
     setShowWindowFeedback(
       "The in-app browser blocked the new tab. Use Open In New Tab or Copy Show URL in the Show Links card below."
     );
+  }
+
+  async function enterFullscreenShow() {
+    try {
+      await requestDashboardShowFullscreen(liveMonitorRef.current);
+      setShowWindowFeedback(
+        "Fullscreen show active. Press Escape when you want to return to the dashboard."
+      );
+    } catch (error) {
+      setShowWindowFeedback(
+        error instanceof Error
+          ? error.message
+          : "Fullscreen was blocked by the browser."
+      );
+    }
   }
 
   async function copyShowUrl() {
@@ -569,14 +628,13 @@ export function DashboardShell({
           >
             Pop Out Show
           </button>
-          <Link
-            href={showLink}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            type="button"
+            onClick={() => void enterFullscreenShow()}
             className="rounded-full border border-white/10 px-5 py-2 text-sm text-white/80 transition hover:bg-white/10"
           >
             Fullscreen Show
-          </Link>
+          </button>
           <button
             onClick={() => void clearAndStartNewSession()}
             disabled={workingAction === "clear-session"}
@@ -700,10 +758,12 @@ export function DashboardShell({
 
             <div className="aspect-video bg-black">
               <iframe
-                src={`${showLink}?monitor=1`}
+                ref={liveMonitorRef}
+                src={getDashboardShowFrameSource(showLink, fullscreenShowActive)}
                 title="Live show monitor"
                 className="h-full w-full border-0"
                 allow="autoplay; fullscreen"
+                allowFullScreen
               />
             </div>
           </div>
@@ -1085,7 +1145,7 @@ export function DashboardShell({
                 className="block w-full rounded-4xl border border-white/10 bg-black/20 p-4 text-left transition hover:border-plasma/40"
               >
                 <p className="text-sm font-semibold text-white">Pop Out Show Window</p>
-                <p className="mt-2 text-sm text-white/60">Open the live screen, then click Enter Fullscreen to hide all browser controls.</p>
+                <p className="mt-2 text-sm text-white/60">Open a separate clean show window with no fullscreen prompt.</p>
               </button>
               <a
                 href={showLink}
@@ -1108,7 +1168,7 @@ export function DashboardShell({
                 <p className="mt-2 break-all font-mono text-xs text-white/60">{showUrlDisplay || showLink}</p>
               </div>
               <LinkCard label="Audience Remix Form" href={publicLink} />
-              <LinkCard label="Fullscreen Projection View" href={showLink} newTab />
+              <LinkCard label="Projection View" href={showLink} newTab />
             </div>
           </DashboardDisclosure>
 
