@@ -22,6 +22,7 @@ const validSession = {
   venueSafeMode: true,
   artistControlEnabled: true,
   autoSelectEnabled: true,
+  videoModel: "gemini_omni_flash" as const,
   videoDurationSeconds: 8,
   submissionRateLimitEnabled: false,
   submissionRateLimitCount: 3
@@ -100,8 +101,23 @@ describe("sessionFormSchema", () => {
     }
   });
 
-  it("keeps existing clients at the eight-second default", () => {
+  it("accepts a model and duration supported by that model", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      videoModel: "seedance2_5",
+      videoDurationSeconds: 30
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.videoModel).toBe("seedance2_5");
+      expect(result.data.videoDurationSeconds).toBe(30);
+    }
+  });
+
+  it("keeps existing clients on Omni at the eight-second default", () => {
     const {
+      videoModel: _videoModel,
       videoDurationSeconds: _videoDurationSeconds,
       ...legacySession
     } = validSession;
@@ -109,21 +125,36 @@ describe("sessionFormSchema", () => {
 
     expect(result.success).toBe(true);
     if (result.success) {
+      expect(result.data.videoModel).toBe("gemini_omni_flash");
       expect(result.data.videoDurationSeconds).toBe(8);
     }
   });
 
-  it("rejects an unsupported video length", () => {
+  it("rejects a video length outside the selected model's range", () => {
     const result = sessionFormSchema.safeParse({
       ...validSession,
-      videoDurationSeconds: 5
+      videoModel: "seedance2",
+      videoDurationSeconds: 16
     });
 
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0]?.message).toBe(
-        "Video length must be 4, 6, or 8 seconds."
-      );
+      expect(result.error.issues[0]).toMatchObject({
+        message: "Video length must be between 4 and 15 seconds for Seedance 2.0.",
+        path: ["videoDurationSeconds"]
+      });
+    }
+  });
+
+  it("rejects an unknown video model", () => {
+    const result = sessionFormSchema.safeParse({
+      ...validSession,
+      videoModel: "future-model"
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["videoModel"]);
     }
   });
 

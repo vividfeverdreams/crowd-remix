@@ -30,7 +30,7 @@ function taskCreatedResponse() {
   );
 }
 
-describe("Runway Gemini Omni video adapter", () => {
+describe("Runway video adapter", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
@@ -123,7 +123,7 @@ describe("Runway Gemini Omni video adapter", () => {
         sourceVideoUrl: "https://example.com/source.mp4",
         remixReferenceImageUrl: "https://example.com/keyframe.jpg",
         apiKey,
-        durationSeconds: 8
+        durationSeconds: 10
       })
     ).resolves.toEqual({
       requestId: taskId,
@@ -152,7 +152,7 @@ describe("Runway Gemini Omni video adapter", () => {
     expect(body.references[0]).not.toHaveProperty("type");
   });
 
-  it("clamps overlong prompts and rejects unsupported durations", async () => {
+  it("clamps overlong prompts and uses the default model duration", async () => {
     const fetchMock = vi.fn().mockResolvedValue(taskCreatedResponse());
     vi.stubGlobal("fetch", fetchMock);
 
@@ -171,21 +171,220 @@ describe("Runway Gemini Omni video adapter", () => {
     const body = JSON.parse(String(request.body));
 
     expect(body.promptText).toHaveLength(1_000);
+    expect(body.duration).toBe(8);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      name: "Seedance 2.0 text-to-video at its maximum duration",
+      model: "seedance2",
+      durationSeconds: 15,
+      imageReferenceUrl: null,
+      endpoint: "text_to_video",
+      expectedBody: {
+        model: "seedance2",
+        promptText: "Turn the stage into a moonlit ocean",
+        ratio: "1280:720",
+        duration: 15,
+        audio: false
+      }
+    },
+    {
+      name: "Seedance 2.5 image-to-video at its maximum duration",
+      model: "seedance2_5",
+      durationSeconds: 30,
+      imageReferenceUrl: "https://example.com/seedance-reference.jpg",
+      endpoint: "image_to_video",
+      expectedBody: {
+        model: "seedance2_5",
+        promptImage: "https://example.com/seedance-reference.jpg",
+        promptText: "Turn the stage into a moonlit ocean",
+        ratio: "1280:720",
+        duration: 30,
+        audio: false
+      }
+    },
+    {
+      name: "Hailuo 3 text-to-video at its minimum duration",
+      model: "hailuo3",
+      durationSeconds: 5,
+      imageReferenceUrl: null,
+      endpoint: "text_to_video",
+      expectedBody: {
+        model: "hailuo3",
+        promptText: "Turn the stage into a moonlit ocean",
+        ratio: "16:9",
+        resolution: "768P",
+        duration: 5
+      }
+    }
+  ])("starts $name with the model-specific request body", async (testCase) => {
+    const fetchMock = vi.fn().mockResolvedValue(taskCreatedResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      startRunwayVideoRender({
+        mode: "seed",
+        prompt: "Turn the stage into a moonlit ocean",
+        imageReferenceUrl: testCase.imageReferenceUrl,
+        apiKey,
+        durationSeconds: testCase.durationSeconds,
+        model: testCase.model
+      })
+    ).resolves.toEqual({
+      requestId: taskId,
+      strategy:
+        testCase.endpoint === "image_to_video"
+          ? "runway_image_to_video"
+          : "runway_text_to_video"
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `https://api.dev.runwayml.com/v1/${testCase.endpoint}`
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+
+    expect(JSON.parse(String(request.body))).toEqual(testCase.expectedBody);
+  });
+
+  it.each([
+    {
+      name: "Seedance 2.0 at its minimum duration",
+      model: "seedance2",
+      durationSeconds: 4,
+      expectedBody: {
+        model: "seedance2",
+        promptVideo: "https://example.com/source.mp4",
+        promptText: "Make the dancers trail ribbons of neon",
+        duration: 4,
+        ratio: "1280:720",
+        audio: false,
+        references: [
+          {
+            uri: "https://example.com/keyframe.jpg"
+          }
+        ]
+      }
+    },
+    {
+      name: "Seedance 2.5 at its minimum duration",
+      model: "seedance2_5",
+      durationSeconds: 4,
+      expectedBody: {
+        model: "seedance2_5",
+        promptVideo: "https://example.com/source.mp4",
+        promptText: "Make the dancers trail ribbons of neon",
+        duration: 4,
+        ratio: "1280:720",
+        audio: false,
+        mode: "reference",
+        references: [
+          {
+            uri: "https://example.com/keyframe.jpg"
+          }
+        ]
+      }
+    },
+    {
+      name: "Hailuo 3 at its maximum duration",
+      model: "hailuo3",
+      durationSeconds: 15,
+      expectedBody: {
+        model: "hailuo3",
+        promptVideo: "https://example.com/source.mp4",
+        promptText: "Make the dancers trail ribbons of neon",
+        duration: 15,
+        ratio: "16:9",
+        resolution: "768P",
+        references: [
+          {
+            uri: "https://example.com/keyframe.jpg"
+          }
+        ]
+      }
+    }
+  ])("starts video-to-video with $name", async (testCase) => {
+    const fetchMock = vi.fn().mockResolvedValue(taskCreatedResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      startRunwayVideoRender({
+        mode: "remix",
+        prompt: "Make the dancers trail ribbons of neon",
+        sourceVideoUrl: "https://example.com/source.mp4",
+        remixReferenceImageUrl: "https://example.com/keyframe.jpg",
+        apiKey,
+        durationSeconds: testCase.durationSeconds,
+        model: testCase.model
+      })
+    ).resolves.toEqual({
+      requestId: taskId,
+      strategy: "runway_video_to_video"
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.dev.runwayml.com/v1/video_to_video"
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+
+    expect(JSON.parse(String(request.body))).toEqual(testCase.expectedBody);
+  });
+
+  it.each([
+    { model: "gemini_omni_flash", durationSeconds: 2 },
+    { model: "gemini_omni_flash", durationSeconds: 11 },
+    { model: "seedance2", durationSeconds: 3 },
+    { model: "seedance2", durationSeconds: 4.5 },
+    { model: "seedance2_5", durationSeconds: 31 },
+    { model: "hailuo3", durationSeconds: 4 }
+  ])(
+    "rejects $model duration $durationSeconds before calling Runway",
+    async ({ model, durationSeconds }) => {
+      const fetchMock = vi.fn().mockResolvedValue(taskCreatedResponse());
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(
+        startRunwayVideoRender({
+          mode: "seed",
+          prompt: "A valid prompt",
+          apiKey,
+          durationSeconds,
+          model
+        })
+      ).rejects.toMatchObject({
+        name: "RunwayApiError",
+        code: "INVALID_DURATION",
+        status: 0,
+        operation: "validation"
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects unknown models before calling Runway", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(taskCreatedResponse());
+    vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       startRunwayVideoRender({
         mode: "seed",
         prompt: "A valid prompt",
         apiKey,
-        durationSeconds: 5
+        durationSeconds: 8,
+        model: "not-a-runway-video-model"
       })
     ).rejects.toMatchObject({
       name: "RunwayApiError",
-      code: "INVALID_DURATION",
-      status: 0
+      code: "UNSUPPORTED_MODEL",
+      status: 0,
+      operation: "validation"
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("retrieves and validates a succeeded task", async () => {

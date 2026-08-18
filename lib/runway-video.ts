@@ -1,14 +1,20 @@
 import { Buffer } from "node:buffer";
+import {
+  defaultVideoModelId,
+  getVideoModelDefinition,
+  isVideoModelDurationSupported,
+  isVideoModelId,
+  type VideoModelId
+} from "@/lib/video-models";
 
 const runwayApiBaseUrl = "https://api.dev.runwayml.com/v1";
 const runwayApiVersion = "2024-11-06";
-const runwayVideoModel = "gemini_omni_flash";
 const runwayRequestTimeoutMs = 45_000;
 const runwayPromptMaxLength = 1_000;
 const runwayTaskIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type RunwayVideoDuration = 4 | 6 | 8;
+export type RunwayVideoDuration = number;
 
 export type RunwayRenderStrategy =
   | "runway_text_to_video"
@@ -164,23 +170,18 @@ export async function startRunwayVideoRender(
 ): Promise<StartedRunwayVideoRender> {
   const apiKey = requireApiKey(input.apiKey);
   const promptText = requirePrompt(input.prompt);
-  const model = input.model?.trim() || runwayVideoModel;
-
-  if (model !== runwayVideoModel) {
-    throw validationError(
-      `Runway video model must be ${runwayVideoModel}.`,
-      "UNSUPPORTED_MODEL"
-    );
-  }
-
-  const duration = requireDuration(input.durationSeconds);
+  const model = requireModel(input.model);
+  const duration = requireDuration(model, input.durationSeconds);
   const signal = input.signal ?? AbortSignal.timeout(runwayRequestTimeoutMs);
   let endpoint: "text_to_video" | "image_to_video" | "video_to_video";
   let strategy: RunwayRenderStrategy;
   let body: Record<string, unknown>;
 
   if (input.mode === "remix") {
-    const videoUri = requireAssetUri(input.sourceVideoUrl, "source video");
+    const sourceVideoUri = requireAssetUri(
+      input.sourceVideoUrl,
+      "source video"
+    );
     const referenceUri = optionalAssetUri(
       input.remixReferenceImageUrl,
       "video keyframe reference"
@@ -188,20 +189,13 @@ export async function startRunwayVideoRender(
 
     endpoint = "video_to_video";
     strategy = "runway_video_to_video";
-    body = {
+    body = buildVideoToVideoBody({
       model,
-      videoUri,
+      sourceVideoUri,
       promptText,
-      ...(referenceUri
-        ? {
-            references: [
-              {
-                uri: referenceUri
-              }
-            ]
-          }
-        : {})
-    };
+      duration,
+      referenceUri
+    });
   } else {
     const promptImage = optionalAssetUri(
       input.imageReferenceUrl,
@@ -212,13 +206,12 @@ export async function startRunwayVideoRender(
     strategy = promptImage
       ? "runway_image_to_video"
       : "runway_text_to_video";
-    body = {
+    body = buildSeedVideoBody({
       model,
-      ...(promptImage ? { promptImage } : {}),
       promptText,
-      ratio: "1280:720",
+      promptImage,
       duration
-    };
+    });
   }
 
   const response = await fetchRunway(
@@ -252,6 +245,106 @@ export async function startRunwayVideoRender(
     requestId,
     strategy
   };
+}
+
+function buildSeedVideoBody(input: {
+  model: VideoModelId;
+  promptText: string;
+  promptImage: string | null;
+  duration: number;
+}): Record<string, unknown> {
+  const promptImage = input.promptImage
+    ? { promptImage: input.promptImage }
+    : {};
+
+  switch (input.model) {
+    case "gemini_omni_flash":
+      return {
+        model: input.model,
+        ...promptImage,
+        promptText: input.promptText,
+        ratio: "1280:720",
+        duration: input.duration
+      };
+    case "seedance2":
+    case "seedance2_5":
+      return {
+        model: input.model,
+        ...promptImage,
+        promptText: input.promptText,
+        ratio: "1280:720",
+        duration: input.duration,
+        audio: false
+      };
+    case "hailuo3":
+      return {
+        model: input.model,
+        ...promptImage,
+        promptText: input.promptText,
+        ratio: "16:9",
+        resolution: "768P",
+        duration: input.duration
+      };
+  }
+}
+
+function buildVideoToVideoBody(input: {
+  model: VideoModelId;
+  sourceVideoUri: string;
+  promptText: string;
+  duration: number;
+  referenceUri: string | null;
+}): Record<string, unknown> {
+  const references = input.referenceUri
+    ? {
+        references: [
+          {
+            uri: input.referenceUri
+          }
+        ]
+      }
+    : {};
+
+  switch (input.model) {
+    case "gemini_omni_flash":
+      return {
+        model: input.model,
+        videoUri: input.sourceVideoUri,
+        promptText: input.promptText,
+        ...references
+      };
+    case "seedance2":
+      return {
+        model: input.model,
+        promptVideo: input.sourceVideoUri,
+        promptText: input.promptText,
+        duration: input.duration,
+        ratio: "1280:720",
+        audio: false,
+        ...references
+      };
+    case "seedance2_5":
+      return {
+        model: input.model,
+        promptVideo: input.sourceVideoUri,
+        promptText: input.promptText,
+        duration: input.duration,
+        ratio: "1280:720",
+        audio: false,
+        mode: "reference",
+        ...references
+      };
+    case "hailuo3":
+      return {
+        model: input.model,
+        promptVideo: input.sourceVideoUri,
+        promptText: input.promptText,
+        duration: input.duration,
+        ratio: "16:9",
+        resolution: "768P",
+        ...references
+      };
+  }
 }
 
 export async function retrieveRunwayTask(
@@ -623,12 +716,29 @@ function requirePrompt(value: string) {
   return prompt.slice(0, runwayPromptMaxLength);
 }
 
-function requireDuration(value: number | null | undefined): RunwayVideoDuration {
-  const duration = value ?? 8;
+function requireModel(value: string | null | undefined): VideoModelId {
+  const model = value?.trim() || defaultVideoModelId;
 
-  if (duration !== 4 && duration !== 6 && duration !== 8) {
+  if (!isVideoModelId(model)) {
     throw validationError(
-      "Runway video duration must be 4, 6, or 8 seconds.",
+      `Runway video model ${JSON.stringify(model)} is not supported.`,
+      "UNSUPPORTED_MODEL"
+    );
+  }
+
+  return model;
+}
+
+function requireDuration(
+  model: VideoModelId,
+  value: number | null | undefined
+): RunwayVideoDuration {
+  const definition = getVideoModelDefinition(model);
+  const duration = value ?? definition.defaultDurationSeconds;
+
+  if (!isVideoModelDurationSupported(model, duration)) {
+    throw validationError(
+      `${definition.label} video duration must be a whole number from ${definition.minDurationSeconds} to ${definition.maxDurationSeconds} seconds.`,
       "INVALID_DURATION"
     );
   }

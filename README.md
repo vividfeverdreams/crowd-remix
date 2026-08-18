@@ -1,6 +1,6 @@
 # DREAM SEQUENCE
 
-DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a visual DNA for the show, seeds the first loop, and lets the crowd send remix ideas through SMS or a QR-linked web form. The app moderates and ranks those ideas, rewrites the winning one into a focused Gemini Omni video-edit prompt, and crossfades into the next completed loop when it is ready.
+DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a visual DNA for the show, chooses a video model, seeds the first loop, and lets the crowd send remix ideas through SMS or a QR-linked web form. The app moderates and ranks those ideas, rewrites the winning one into a focused video-edit prompt, and crossfades into the next completed loop when it is ready.
 
 ## What This MVP Includes
 
@@ -23,8 +23,8 @@ DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a v
 - Public web prompt intake via `/r/[sessionCode]`
 - OpenAI text scoring for moderation/ranking/prompt compilation
 - AI-assisted session setup that expands a plain-English concept into an editable visual-DNA draft
-- Gemini Omni Flash seed generation and video-remix editing through Runway
-- Optional audience reference photos with multimodal safety screening and image-guided Omni remixes
+- Selectable Gemini Omni Flash, Seedance 2.0, Seedance 2.5, and Hailuo 3.0 seed generation and video-remix editing through Runway
+- Optional audience reference photos with multimodal safety screening and image-guided remixes
 - SSE-driven realtime updates for the dashboard and show screen
 - Double-buffer video crossfade on the fullscreen playback route
 - Supabase Postgres persistence for users, sessions, queue state, and render metadata
@@ -33,7 +33,7 @@ DREAM SEQUENCE is a single-DJ MVP for live AI visuals. A DJ logs in, defines a v
 
 ## Important Product Constraint
 
-Gemini Omni video generation and editing use Runway's asynchronous task API. The current loop keeps playing while a task runs; after Runway publishes an output URL, the app immediately downloads and stores the completed MP4 for durable playback.
+Live video generation and editing use Runway's asynchronous task API. The creation page constrains clip length to each selected model's supported whole-second range: Gemini Omni Flash 3–10 seconds, Seedance 2.0 4–15 seconds, Seedance 2.5 4–30 seconds, and Hailuo 3.0 5–15 seconds. The current loop keeps playing while a task runs; after Runway publishes an output URL, the app immediately downloads and stores the completed MP4 for durable playback.
 
 ## Local Setup
 
@@ -85,12 +85,11 @@ You can override those values with `SEED_DJ_EMAIL` and `SEED_DJ_PASSWORD`.
 - `OPENAI_API_KEY`
 - `OPENAI_TEXT_MODEL`
 
-### Required for Runway-backed Gemini Omni generation and remixing
+### Required for selectable Runway video generation and remixing
 
 - `RUNWAYML_API_SECRET`
-- `RUNWAY_VIDEO_MODEL`
 
-`GEMINI_API_KEY` and `GEMINI_VIDEO_MODEL` remain available only as a legacy fallback. The app reads OpenAI, Runway, and Google credentials from server-side environment variables only. The dashboard does not store or edit API keys.
+The model is selected per session on the creation page. `GEMINI_API_KEY` and `GEMINI_VIDEO_MODEL` remain available only as a legacy Gemini Omni fallback; Seedance and Hailuo require Runway. The app reads OpenAI, Runway, and Google credentials from server-side environment variables only. The dashboard does not store or edit API keys.
 
 The AI-assisted session setup uses this same OpenAI text-model configuration. If draft generation is unavailable, the setup screen still lets the DJ enter every field manually.
 
@@ -146,7 +145,7 @@ The live snapshot endpoint intentionally ends each serverless response before Ve
 3. The text model scores it for safety, cohesion, novelty, and remixability.
 4. Approved prompts enter the ranked queue.
 5. If no render is active and no next asset is waiting, the best approved prompt is selected.
-6. The app starts a Runway Gemini Omni seed task or edits the current video for a remix, including an approved audience reference photo when one was attached.
+6. The app starts a Runway task with the session's selected video model or edits the current video for a remix, including an approved audience reference photo when one was attached.
 7. Once the render is completed, the output becomes the next queued loop.
 8. With audio sync disconnected, the fullscreen show keeps the existing automatic crossfade behavior.
 9. With audio sync connected, the ready loop waits for a detected build or section change, or for the operator to click **Take next remix now**.
@@ -157,9 +156,9 @@ Use the **Audio Reactive Engine** panel directly on the DJ dashboard, then open 
 
 1. Route a mixer, audio interface, or virtual loopback output into an input device visible to the browser.
 2. Click **Connect input** and allow microphone/audio-input access for the site.
-3. Select the desired input, choose one of the 10 audio-reactive transformations from the dropdown, and adjust **VFX intensity**. The selected treatment transforms the Gemini Omni footage itself rather than drawing a graphic overlay.
+3. Select the desired input, choose one of the 10 audio-reactive transformations from the dropdown, and adjust **VFX intensity**. The selected treatment transforms the video footage itself rather than drawing a graphic overlay.
 4. Turn on **Auto-cycle all 10 effects** to move to the next effect every 12 seconds while the input is connected.
-5. Leave **Take next remix on musical cue** enabled to crossfade ready Gemini Omni remixes on detected builds and strong returns after quiet passages.
+5. Leave **Take next remix on musical cue** enabled to crossfade ready remixes on detected builds and strong returns after quiet passages.
 
 The input is analyzed locally with the Web Audio API and is never connected to browser playback, which avoids monitoring feedback. Keep the dashboard open on the same browser and computer as the show window; it sends only reactive levels and transition cues to the visual output. The projection window contains no operator controls or status text.
 

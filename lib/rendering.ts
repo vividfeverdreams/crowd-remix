@@ -22,6 +22,12 @@ import {
 } from "@/lib/runway-video";
 import { getDemoLoopUrl, persistVideoAsset } from "@/lib/storage";
 import { formatVideoDuration } from "@/lib/video-duration";
+import {
+  defaultVideoModelId,
+  getVideoModelDefinition,
+  isVideoModelId,
+  type VideoModelId
+} from "@/lib/video-models";
 
 const geminiInteractionsUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const geminiApiRevision = "2026-05-20";
@@ -38,6 +44,7 @@ type StartRenderInput = {
   runwayApiKey?: string | null;
   geminiApiKey?: string | null;
   durationSeconds?: number | null;
+  videoModel?: VideoModelId | string | null;
 };
 
 type StartedRender =
@@ -190,6 +197,12 @@ function isRetryableGeminiReconciliationError(error: unknown) {
 }
 
 export async function startVideoRender(input: StartRenderInput): Promise<StartedRender> {
+  const requestedVideoModel = input.videoModel ?? defaultVideoModelId;
+
+  if (!isVideoModelId(requestedVideoModel)) {
+    throw new Error(`Unsupported video model: ${requestedVideoModel}`);
+  }
+
   if (input.runwayApiKey) {
     const started = await startRunwayVideoRender({
       mode: input.mode,
@@ -199,7 +212,7 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
       remixReferenceImageUrl: input.remixReferenceImageUrl,
       apiKey: input.runwayApiKey,
       durationSeconds: input.durationSeconds,
-      model: env.runwayVideoModel
+      model: requestedVideoModel
     });
 
     console.info("[render-job] Runway task started", {
@@ -223,6 +236,14 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
       publicUrl: getDemoLoopUrl(),
       storagePath: null
     };
+  }
+
+  if (requestedVideoModel !== defaultVideoModelId) {
+    const model = getVideoModelDefinition(requestedVideoModel);
+
+    throw new Error(
+      `${model.label} requires a Runway API key. Configure RUNWAYML_API_SECRET or select Gemini Omni Flash.`
+    );
   }
 
   const statefulSourceId =

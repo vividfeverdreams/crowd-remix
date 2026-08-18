@@ -178,8 +178,8 @@ export function rawPromptAssessment(input: AssessmentInput): SubmissionAssessmen
     flags: Array.from(flags),
     explanation:
       decision === "approved"
-        ? "Approved without AI rewriting or artist-direction scoring. The audience prompt will be sent to Gemini Omni exactly as written."
-        : "Rejected by the venue-safe hard-safety filter before the raw prompt could be sent to Gemini Omni.",
+        ? "Approved without AI rewriting or artist-direction scoring. The audience prompt will be sent to the session's selected video model exactly as written."
+        : "Rejected by the venue-safe hard-safety filter before the raw prompt could be sent to the selected video model.",
     approvalReason:
       decision === "approved"
         ? "Raw Prompt Mode: queued exactly as written."

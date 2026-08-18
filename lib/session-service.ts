@@ -22,6 +22,11 @@ import {
 } from "@/lib/submission-rate-limit-state";
 import { createSessionCode, normalizePromptText } from "@/lib/utils";
 import { queueAutomatedRender } from "@/lib/submission-pipeline";
+import {
+  normalizeVideoDurationSecondsForModel,
+  normalizeVideoModelId,
+  type VideoModelId
+} from "@/lib/video-models";
 
 export { completePlaybackTransition } from "@/lib/playback-transition";
 
@@ -40,6 +45,7 @@ type SessionInput = {
   venueSafeMode: boolean;
   artistControlEnabled: boolean;
   autoSelectEnabled: boolean;
+  videoModel?: VideoModelId | string | null;
   videoDurationSeconds: number;
   submissionRateLimitEnabled: boolean;
   submissionRateLimitCount: number;
@@ -50,6 +56,11 @@ export const initialGenerationQueueFailureMessage =
 
 export async function createDjSession(userId: string, input: SessionInput) {
   const code = createSessionCode(`${input.artistName}-${input.trackName}`);
+  const videoModel = normalizeVideoModelId(input.videoModel);
+  const videoDurationSeconds = normalizeVideoDurationSecondsForModel(
+    videoModel,
+    input.videoDurationSeconds
+  );
 
   const session = await db.dJSession.create({
     data: {
@@ -69,7 +80,8 @@ export async function createDjSession(userId: string, input: SessionInput) {
       venueSafeMode: input.venueSafeMode,
       artistControlEnabled: input.artistControlEnabled,
       autoSelectEnabled: input.autoSelectEnabled,
-      videoDurationSeconds: input.videoDurationSeconds,
+      videoModel,
+      videoDurationSeconds,
       playbackState: {
         create: {
           status: "idle"

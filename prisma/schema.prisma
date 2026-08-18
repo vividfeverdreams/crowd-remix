@@ -43,6 +43,7 @@ model DJSession {
   venueSafeMode        Boolean            @default(true)
   artistControlEnabled Boolean            @default(true)
   autoSelectEnabled    Boolean            @default(true)
+  videoModel           String             @default("gemini_omni_flash")
   videoDurationSeconds Int                @default(8)
   startedAt            DateTime?
   stoppedAt            DateTime?

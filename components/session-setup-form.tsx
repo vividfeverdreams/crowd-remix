@@ -5,10 +5,13 @@ import { useRouter } from "next/navigation";
 import { generateSessionDraft } from "@/app/dashboard/new/actions";
 import { sessionFormSchema, sessionIdeaSchema } from "@/lib/schemas";
 import {
-  defaultVideoDurationSeconds,
-  videoDurationOptions,
-  type VideoDurationSeconds
-} from "@/lib/video-duration";
+  defaultVideoModelId,
+  getVideoDurationForModelChange,
+  getVideoDurationOptions,
+  getVideoModelDefinition,
+  normalizeVideoModelId,
+  videoModelDefinitions
+} from "@/lib/video-models";
 
 const blankForm = {
   name: "",
@@ -25,7 +28,8 @@ const blankForm = {
   venueSafeMode: true,
   artistControlEnabled: true,
   autoSelectEnabled: true,
-  videoDurationSeconds: defaultVideoDurationSeconds,
+  videoModel: defaultVideoModelId,
+  videoDurationSeconds: getVideoModelDefinition(defaultVideoModelId).defaultDurationSeconds,
   submissionRateLimitEnabled: false,
   submissionRateLimitCount: 3
 };
@@ -35,12 +39,6 @@ type DraftSource = "ai" | "manual";
 
 const inputClassName =
   "w-full rounded-3xl border border-white/10 bg-black/30 px-4 py-3 outline-none transition placeholder:text-white/30 focus:border-plasma";
-
-const videoDurationDescriptions: Record<VideoDurationSeconds, string> = {
-  4: "Quick turnover",
-  6: "Balanced pacing",
-  8: "Longest visual arc"
-};
 
 export function SessionSetupForm() {
   const router = useRouter();
@@ -53,6 +51,9 @@ export function SessionSetupForm() {
   const [allowedMotifsEnabled, setAllowedMotifsEnabled] = useState(true);
   const [isGenerating, startGenerating] = useTransition();
   const [isCreating, startCreating] = useTransition();
+  const selectedVideoModelId = normalizeVideoModelId(form.videoModel);
+  const selectedVideoModel = getVideoModelDefinition(selectedVideoModelId);
+  const videoDurationOptions = getVideoDurationOptions(selectedVideoModelId);
 
   function handleIdeaSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -393,42 +394,80 @@ export function SessionSetupForm() {
           </label>
 
           <fieldset className="lg:col-span-2">
-            <legend className="text-sm font-medium text-white/80">Video length</legend>
-            <p id="video-duration-help" className="mt-2 text-sm leading-6 text-white/50">
-              Applies to the opening seed and every crowd remix in this session.
+            <legend className="text-sm font-medium text-white/80">Video remix model</legend>
+            <p id="video-model-help" className="mt-2 text-sm leading-6 text-white/50">
+              Choose the model that creates the opening visual and every remix in this session.
             </p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
-              {videoDurationOptions.map((duration) => (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {videoModelDefinitions.map((model) => (
                 <label
-                  key={duration}
+                  key={model.id}
                   className={`cursor-pointer rounded-3xl border px-4 py-4 transition focus-within:ring-2 focus-within:ring-plasma/70 ${
-                    form.videoDurationSeconds === duration
+                    selectedVideoModelId === model.id
                       ? "border-plasma/60 bg-plasma/10"
                       : "border-white/10 bg-black/20 hover:border-white/20"
                   }`}
                 >
                   <input
                     type="radio"
-                    name="videoDurationSeconds"
-                    value={duration}
-                    checked={form.videoDurationSeconds === duration}
-                    aria-describedby="video-duration-help"
+                    name="videoModel"
+                    value={model.id}
+                    checked={selectedVideoModelId === model.id}
+                    aria-describedby="video-model-help"
                     onChange={() =>
                       setForm((current) => ({
                         ...current,
-                        videoDurationSeconds: duration
+                        videoModel: model.id,
+                        videoDurationSeconds: getVideoDurationForModelChange(
+                          model.id,
+                          current.videoDurationSeconds
+                        )
                       }))
                     }
                     className="sr-only"
                   />
-                  <span className="block text-lg font-semibold text-white">{duration} seconds</span>
-                  <span className="mt-1 block text-xs text-white/50">
-                    {videoDurationDescriptions[duration]}
+                  <span className="flex flex-wrap items-center gap-2 text-base font-semibold text-white">
+                    {model.label}
+                    {model.id === defaultVideoModelId ? (
+                      <span className="rounded-full border border-white/15 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-white/55">
+                        Current
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="mt-2 block text-xs leading-5 text-white/50">
+                    {model.description} {model.minDurationSeconds}–{model.maxDurationSeconds} seconds.
                   </span>
                 </label>
               ))}
             </div>
           </fieldset>
+
+          <label className="block lg:col-span-2">
+            <span className="mb-2 block text-sm font-medium text-white/80">Video length</span>
+            <select
+              name="videoDurationSeconds"
+              value={form.videoDurationSeconds}
+              aria-describedby="video-duration-help"
+              onChange={(event) => {
+                const durationSeconds = Number(event.currentTarget.value);
+
+                setForm((current) => ({
+                  ...current,
+                  videoDurationSeconds: durationSeconds
+                }));
+              }}
+              className={inputClassName}
+            >
+              {videoDurationOptions.map((duration) => (
+                <option key={duration} value={duration} className="bg-ink text-white">
+                  {duration} seconds
+                </option>
+              ))}
+            </select>
+            <span id="video-duration-help" className="mt-2 block text-xs leading-5 text-white/45">
+              {selectedVideoModel.label} supports whole-second clips from {selectedVideoModel.minDurationSeconds} to {selectedVideoModel.maxDurationSeconds} seconds. This applies to the opening seed and every crowd remix.
+            </span>
+          </label>
         </div>
 
         <div className="mt-6 rounded-3xl border border-white/10 bg-white/[0.025] p-5 sm:p-6">
@@ -439,7 +478,7 @@ export function SessionSetupForm() {
               <p id="artist-control-help" className="mt-2 text-sm leading-6 text-white/60">
                 {form.artistControlEnabled
                   ? "On: the application moderates, scores, and rewrites crowd ideas using your Creative Bible, motifs, palette, and motion rules."
-                  : "Off — Raw Prompt Mode: crowd remix prompts bypass artist direction and AI rewriting, then go to Gemini Omni exactly as written. Your base prompt still seeds the show."}
+                  : `Off — Raw Prompt Mode: crowd remix prompts bypass artist direction and AI rewriting, then go to ${selectedVideoModel.label} exactly as written. Your base prompt still seeds the show.`}
               </p>
             </div>
 
@@ -542,8 +581,8 @@ export function SessionSetupForm() {
         <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
           <p className="max-w-2xl text-sm leading-7 text-white/65">
             {form.artistControlEnabled
-              ? "The first live render seeds the show from your base prompt. After that, approved crowd prompts are rewritten into focused Gemini Omni video edits."
-              : "The first live render still uses your base prompt. After that, crowd remix prompts are sent to Gemini Omni exactly as written, with no artist-direction rewrite."}
+              ? `The first live render seeds the show from your base prompt with ${selectedVideoModel.label}. After that, approved crowd prompts are rewritten into focused video edits using the same model.`
+              : `The first live render still uses your base prompt with ${selectedVideoModel.label}. After that, crowd remix prompts are sent to the same model exactly as written, with no artist-direction rewrite.`}
           </p>
 
           <button

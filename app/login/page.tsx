@@ -18,7 +18,7 @@ export default async function LoginPage() {
           <p className="font-mono text-xs uppercase tracking-[0.32em] text-plasma">DJ Access</p>
           <h1 className="mt-5 text-4xl font-semibold text-white">Run the room without losing the loop.</h1>
           <p className="mt-5 max-w-md text-base leading-7 text-white/70">
-            Log in to configure the session, review the crowd queue, and control when the next Gemini Omni remix takes the screen.
+            Log in to configure the session, choose its video model, review the crowd queue, and control when the next remix takes the screen.
           </p>
 
           <div className="mt-10 space-y-4 text-sm text-white/70">

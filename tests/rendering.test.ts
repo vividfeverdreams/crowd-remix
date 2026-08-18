@@ -80,8 +80,7 @@ vi.mock("@/lib/google-key-store", () => ({
 vi.mock("@/lib/env", () => ({
   env: {
     geminiVideoModel: "gemini-omni-flash-preview",
-    runwayApiSecret: "test-runway-key",
-    runwayVideoModel: "gemini_omni_flash"
+    runwayApiSecret: "test-runway-key"
   }
 }));
 
@@ -155,6 +154,38 @@ describe("Gemini Omni video requests", () => {
       promptText: "Slow liquid chrome waves",
       ratio: "1280:720",
       duration: 6
+    });
+  });
+
+  it("forwards the session's selected video model to Runway", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "12121212-1212-4121-8121-121212121212"
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startVideoRender({
+      mode: "seed",
+      prompt: "A slow orbit through luminous glass",
+      runwayApiKey: "test-runway-key",
+      videoModel: "seedance2_5",
+      durationSeconds: 24
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      model: "seedance2_5",
+      duration: 24
     });
   });
 
@@ -487,6 +518,37 @@ describe("Gemini Omni video requests", () => {
       publicUrl: "https://example.com/demo.mp4",
       storagePath: null
     });
+  });
+
+  it("keeps demo mode available for every selectable model", async () => {
+    await expect(
+      startVideoRender({
+        mode: "seed",
+        prompt: "Slow liquid chrome waves",
+        videoModel: "hailuo3",
+        durationSeconds: 12
+      })
+    ).resolves.toMatchObject({
+      kind: "demo",
+      publicUrl: "https://example.com/demo.mp4"
+    });
+  });
+
+  it("requires Runway when a non-Omni model is selected", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      startVideoRender({
+        mode: "seed",
+        prompt: "Slow liquid chrome waves",
+        geminiApiKey: "test-gemini-key",
+        videoModel: "seedance2",
+        durationSeconds: 8
+      })
+    ).rejects.toThrow("Seedance 2.0 requires a Runway API key");
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("never falls back to text-to-video for a remix without a source video", async () => {

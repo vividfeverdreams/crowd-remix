@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
-  defaultVideoDurationSeconds,
-  isVideoDurationSeconds
-} from "@/lib/video-duration";
+  defaultVideoModelId,
+  getVideoModelDefinition,
+  isVideoModelDurationSupported,
+  videoModelIds
+} from "@/lib/video-models";
 
 function requiredText(label: string, maxLength: number) {
   return z
@@ -44,13 +46,11 @@ export const sessionFormSchema = z.object({
   venueSafeMode: z.boolean().default(true),
   artistControlEnabled: z.boolean().default(true),
   autoSelectEnabled: z.boolean().default(true),
+  videoModel: z.enum(videoModelIds).default(defaultVideoModelId),
   videoDurationSeconds: z
     .number()
     .int("Video length must be a whole number of seconds.")
-    .refine(isVideoDurationSeconds, {
-      message: "Video length must be 4, 6, or 8 seconds."
-    })
-    .default(defaultVideoDurationSeconds),
+    .default(getVideoModelDefinition(defaultVideoModelId).defaultDurationSeconds),
   submissionRateLimitEnabled: z.boolean().default(false),
   submissionRateLimitCount: z
     .number()
@@ -58,6 +58,21 @@ export const sessionFormSchema = z.object({
     .min(1, "Submission limit must be at least 1.")
     .max(20, "Submission limit must be 20 or fewer.")
     .default(3)
+}).superRefine((session, context) => {
+  if (
+    !isVideoModelDurationSupported(
+      session.videoModel,
+      session.videoDurationSeconds
+    )
+  ) {
+    const model = getVideoModelDefinition(session.videoModel);
+
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Video length must be between ${model.minDurationSeconds} and ${model.maxDurationSeconds} seconds for ${model.label}.`,
+      path: ["videoDurationSeconds"]
+    });
+  }
 });
 
 export const sessionIdeaSchema = z.object({

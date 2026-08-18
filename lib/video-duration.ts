@@ -1,14 +1,20 @@
-export const videoDurationOptions = [4, 6, 8] as const;
+import {
+  defaultVideoModelId,
+  getVideoDurationOptions,
+  getVideoModelDefinition,
+  isVideoModelDurationSupported
+} from "@/lib/video-models";
 
-export type VideoDurationSeconds = (typeof videoDurationOptions)[number];
+export const videoDurationOptions = getVideoDurationOptions(defaultVideoModelId);
 
-export const defaultVideoDurationSeconds: VideoDurationSeconds = 8;
+export type VideoDurationSeconds = number;
+
+export const defaultVideoDurationSeconds = getVideoModelDefinition(
+  defaultVideoModelId
+).defaultDurationSeconds;
 
 export function isVideoDurationSeconds(value: unknown): value is VideoDurationSeconds {
-  return (
-    typeof value === "number" &&
-    (videoDurationOptions as readonly number[]).includes(value)
-  );
+  return isVideoModelDurationSupported(defaultVideoModelId, value);
 }
 
 export function normalizeVideoDurationSeconds(

@@ -165,6 +165,7 @@ describe("submission render queue", () => {
         id: "session-1",
         userId: "user-1",
         imageReferenceUrl: null,
+        videoModel: "seedance2",
         videoDurationSeconds: 6,
         playbackState: {
           currentAssetId: "asset-current",
@@ -219,6 +220,7 @@ describe("submission render queue", () => {
         mode: "remix",
         prompt: "Compiled private model prompt",
         remixReferenceImageUrl: "https://example.com/reference.jpg",
+        videoModel: "seedance2",
         durationSeconds: 6
       })
     );
@@ -466,6 +468,64 @@ describe("submission render queue", () => {
       }
     });
     expect(mocks.completeGeminiVideoRender).not.toHaveBeenCalled();
+    expect(mocks.startVideoRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        videoModel: "gemini_omni_flash"
+      })
+    );
+  });
+
+  it("normalizes a stored duration against the selected video model", async () => {
+    mocks.findSession.mockResolvedValue({
+      id: "session-1",
+      userId: "user-1",
+      updatedAt: new Date("2026-08-14T12:00:00.000Z"),
+      imageReferenceUrl: null,
+      videoModel: "hailuo3",
+      videoDurationSeconds: 4,
+      playbackState: {
+        currentAssetId: null,
+        nextAssetId: null,
+        currentAsset: null
+      },
+      renderJobs: [],
+      visualAssets: []
+    });
+    mocks.createAsset.mockResolvedValue({
+      id: "asset-hailuo-seed"
+    });
+    mocks.createJob.mockResolvedValue({
+      id: "render-hailuo-seed"
+    });
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "hailuo-request",
+      outputUri: null,
+      strategy: "text_to_video"
+    });
+
+    await expect(
+      queueAutomatedRender(
+        "session-1",
+        null,
+        "seed",
+        "Shape an iridescent Hailuo seed"
+      )
+    ).resolves.toEqual({
+      id: "render-hailuo-seed"
+    });
+
+    expect(mocks.createAsset).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        durationSeconds: 8
+      })
+    });
+    expect(mocks.startVideoRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        videoModel: "hailuo3",
+        durationSeconds: 8
+      })
+    );
   });
 
   it("allows only one concurrent render to claim the generation head", async () => {

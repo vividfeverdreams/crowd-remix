@@ -12,6 +12,10 @@ import { normalizeVideoProgress } from "@/lib/render-progress";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { formatRelativeTime } from "@/lib/utils";
+import {
+  getVideoModelDefinition,
+  normalizeVideoModelId
+} from "@/lib/video-models";
 
 type DashboardShellProps = {
   initialSnapshot: NonNullable<SessionSnapshot>;
@@ -154,6 +158,9 @@ export function DashboardShell({
   const googleStatus = initialGoogleStatus;
 
   const session = deferredSnapshot.session;
+  const videoModel = getVideoModelDefinition(
+    normalizeVideoModelId(session.videoModel)
+  );
   const qrOverlayVisible = pendingQrOverlayVisibility ?? session.qrOverlayVisible;
   const wordmarkOverlayVisible =
     pendingWordmarkOverlayVisibility ?? session.wordmarkOverlayVisible;
@@ -1122,7 +1129,7 @@ export function DashboardShell({
             <p className="text-sm leading-7 text-white/72">
               {googleStatus.source === "env"
                 ? googleStatus.provider === "runway"
-                  ? `Using Runway for Gemini Omni seed and remix video calls${googleStatus.last4 ? ` with a key ending in ${googleStatus.last4}` : ""}.`
+                  ? `Using Runway for ${videoModel.label} seed and remix video calls${googleStatus.last4 ? ` with a key ending in ${googleStatus.last4}` : ""}.`
                   : `Using the legacy direct Gemini connection${googleStatus.last4 ? ` with a key ending in ${googleStatus.last4}` : ""} for seed and remix video calls.`
                 : "No video generation API key is configured, so video rendering is using the demo fallback."}
             </p>
@@ -1132,7 +1139,7 @@ export function DashboardShell({
                 : "OpenAI text scoring is not configured, so moderation and ranking use the built-in fallback behavior."}
             </p>
             <div className="mt-5 rounded-3xl border border-white/10 bg-black/20 px-4 py-4 text-sm leading-7 text-white/72">
-              Set `RUNWAYML_API_SECRET` for video generation and `OPENAI_API_KEY` for AI-assisted moderation, ranking, and session setup. The dashboard never stores or edits API keys.
+              Set `RUNWAYML_API_SECRET` for selectable video models and `OPENAI_API_KEY` for AI-assisted moderation, ranking, and session setup. The dashboard never stores or edits API keys.
             </div>
           </DashboardDisclosure>
 

@@ -36,7 +36,10 @@ import {
   getSubmissionRateLimitSettings,
   submissionRateLimitConfiguredEvent
 } from "@/lib/submission-rate-limit-state";
-import { normalizeVideoDurationSeconds } from "@/lib/video-duration";
+import {
+  normalizeVideoDurationSecondsForModel,
+  normalizeVideoModelId
+} from "@/lib/video-models";
 
 type IntakeInput = {
   sessionCode: string;
@@ -556,7 +559,9 @@ export async function queueAutomatedRender(
       }
 
       const mode = requestedMode;
-      const durationSeconds = normalizeVideoDurationSeconds(
+      const videoModel = normalizeVideoModelId(session.videoModel);
+      const durationSeconds = normalizeVideoDurationSecondsForModel(
+        videoModel,
         session.videoDurationSeconds
       );
       const outputAsset = await tx.visualAsset.create({
@@ -585,6 +590,7 @@ export async function queueAutomatedRender(
       return {
         sourceMissing: false as const,
         durationSeconds,
+        videoModel,
         renderJob,
         session,
         sourceAsset,
@@ -615,6 +621,7 @@ export async function queueAutomatedRender(
 
   const {
     durationSeconds,
+    videoModel,
     renderJob,
     session,
     sourceAsset,
@@ -641,6 +648,7 @@ export async function queueAutomatedRender(
           : null,
       runwayApiKey: env.runwayApiSecret,
       geminiApiKey,
+      videoModel,
       durationSeconds
     });
   } catch (error) {
