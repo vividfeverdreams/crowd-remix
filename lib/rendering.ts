@@ -1412,7 +1412,9 @@ async function markRenderJobReady(
         }
       });
     } else {
-      const promotedAssetId = await promoteOldestReadyAsset(renderJob.sessionId, tx);
+      const promotedAssetId = await promoteOldestReadyAsset(renderJob.sessionId, tx, {
+        allowArchivedRotation: false
+      });
 
       if (promotedAssetId === assetId) {
         placement = "next";

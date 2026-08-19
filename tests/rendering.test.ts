@@ -1249,7 +1249,10 @@ describe("Gemini Omni video requests", () => {
     expect(testDoubles.takePlaybackAsset).not.toHaveBeenCalled();
     expect(testDoubles.promoteOldestReadyAsset).toHaveBeenCalledWith(
       "session-1",
-      testDoubles.transaction
+      testDoubles.transaction,
+      {
+        allowArchivedRotation: false
+      }
     );
 
     expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({

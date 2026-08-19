@@ -286,12 +286,7 @@ export async function ingestSubmission(input: IntakeInput) {
   };
 }
 
-export async function attemptAutomatedSelection(
-  sessionId: string,
-  options: {
-    allowArchivedRotation?: boolean;
-  } = {}
-) {
+export async function attemptAutomatedSelection(sessionId: string) {
   const session = await db.dJSession.findUnique({
     where: {
       id: sessionId
@@ -377,12 +372,9 @@ export async function attemptAutomatedSelection(
     });
   }
 
-  const promotedAssetId =
-    options.allowArchivedRotation === false
-      ? await promoteOldestReadyAsset(sessionId, db, {
-          allowArchivedRotation: false
-        })
-      : await promoteOldestReadyAsset(sessionId);
+  const promotedAssetId = await promoteOldestReadyAsset(sessionId, db, {
+    allowArchivedRotation: false
+  });
 
   if (promotedAssetId) {
     console.info("[playback-queue] staged rotation asset", {

@@ -60,9 +60,7 @@ describe("playback transition route", () => {
       "session-1",
       "asset-next"
     );
-    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1", {
-      allowArchivedRotation: false
-    });
+    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1");
     expect(mocks.waitUntil).toHaveBeenCalledOnce();
 
     const [backgroundWork] = mocks.waitUntil.mock.calls[0] as [Promise<unknown>];

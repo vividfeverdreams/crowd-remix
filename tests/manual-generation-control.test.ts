@@ -94,9 +94,7 @@ describe("manual generation control", () => {
     expect(
       mocks.completePlaybackTransition.mock.invocationCallOrder[0]
     ).toBeLessThan(mocks.publishAudioSyncMessage.mock.invocationCallOrder[0]);
-    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1", {
-      allowArchivedRotation: false
-    });
+    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1");
     expect(mocks.waitUntil).toHaveBeenCalledOnce();
   });
 
@@ -125,9 +123,7 @@ describe("manual generation control", () => {
       "session-1",
       "user-1"
     );
-    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1", {
-      allowArchivedRotation: false
-    });
+    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1");
   });
 
   it("reports a conflict instead of claiming an uncommitted selection succeeded", async () => {

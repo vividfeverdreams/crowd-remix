@@ -803,7 +803,13 @@ describe("submission render queue", () => {
       "session-1",
       "asset-ready"
     );
-    expect(mocks.promoteOldestReadyAsset).toHaveBeenCalledWith("session-1");
+    expect(mocks.promoteOldestReadyAsset).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(Object),
+      {
+        allowArchivedRotation: false
+      }
+    );
     expect(mocks.claimSubmission).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -850,7 +856,7 @@ describe("submission render queue", () => {
     expect(mocks.startVideoRender).not.toHaveBeenCalled();
   });
 
-  it("keeps post-transition selection from staging archived rotation", async () => {
+  it("keeps automated selection from staging archived rotation", async () => {
     mocks.findSession.mockResolvedValue({
       id: "session-1",
       userId: "user-1",
@@ -865,11 +871,7 @@ describe("submission render queue", () => {
       submissions: []
     });
 
-    await expect(
-      attemptAutomatedSelection("session-1", {
-        allowArchivedRotation: false
-      })
-    ).resolves.toBeNull();
+    await expect(attemptAutomatedSelection("session-1")).resolves.toBeNull();
 
     expect(mocks.promoteOldestReadyAsset).toHaveBeenCalledWith(
       "session-1",
