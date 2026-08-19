@@ -6,9 +6,12 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   acknowledgeAuthoritativePlaybackAsset,
   decideAutomaticCueTransition,
+  decideManualTakeRequest,
   getAudienceFacingRemixPrompt,
+  getAuthoritativeNextPlaybackCandidate,
   getAuthoritativePlaybackCandidate,
   getIntroducedPlaybackAssetIds,
+  getNextPlaybackRotationAsset,
   getPlaybackAttribution,
   getShowPlaybackCandidate,
   isCueSyncedPlaybackActive,
@@ -17,7 +20,11 @@ import {
   getStandbyVideoSlot,
   shouldShowPlaybackIntroduction,
   shouldAdvancePlaybackAtVideoEnd,
+  shouldCommitShowPlaybackTransition,
+  shouldCommitVisibleAuthoritativeNext,
+  shouldHoldPlaybackForAuthoritativeCommit,
   shouldHandoffPreparedPlaybackAtBoundary,
+  type ShowPlaybackCandidateSource,
   type VideoSlotIndex,
   getTypewriterChunkSize
 } from "@/lib/remix-transition";
@@ -38,6 +45,7 @@ type ShowScreenProps = {
 type QueuedTransition = {
   assetId: string;
   assetStatus: string;
+  source: ShowPlaybackCandidateSource;
   nickname: string | null;
   promptText: string;
   referenceImageUrl: string | null;
@@ -80,14 +88,11 @@ export function shouldAdvanceShowPlaybackAtVideoEnd(input: {
   audioSyncConnected: boolean;
   nextAssetReady: boolean;
 }) {
-  return (
-    canMutateShowPlayback(input.isMonitor) &&
-    shouldAdvancePlaybackAtVideoEnd({
-      activeSlotEnded: input.activeSlotEnded,
-      audioSyncConnected: input.audioSyncConnected,
-      nextAssetReady: input.nextAssetReady
-    })
-  );
+  return shouldAdvancePlaybackAtVideoEnd({
+    activeSlotEnded: input.activeSlotEnded,
+    audioSyncConnected: input.audioSyncConnected,
+    nextAssetReady: input.nextAssetReady
+  });
 }
 
 export function getVideoSlotPresentation(isActive: boolean) {
@@ -127,6 +132,11 @@ export function ShowScreen({
   const [promptReveal, setPromptReveal] = useState<QueuedTransition | null>(null);
   const [promptExiting, setPromptExiting] = useState(false);
   const [requestedAssetId, setRequestedAssetId] = useState<string | null>(null);
+  const [awaitingAuthoritativeCommit, setAwaitingAuthoritativeCommit] =
+    useState<{
+      assetId: string;
+      baselineCurrentAssetId: string | null;
+    } | null>(null);
   const [submissionUrl, setSubmissionUrl] = useState("");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const visualTargetRef = useRef<HTMLDivElement>(null);
@@ -148,6 +158,8 @@ export function ShowScreen({
   const handledCueIdRef = useRef<string | null>(null);
   const handledManualTakeIdRef = useRef<string | null>(null);
   const locallyAdvancedAssetIdRef = useRef<string | null>(null);
+  const localRotationAuthoritativeAssetIdRef = useRef<string | null>(null);
+  const visibleAuthoritativeCommitAssetIdRef = useRef<string | null>(null);
   const promotedPlaybackAssetIdRef = useRef<string | null>(null);
   const cancelPromotedPlaybackRef = useRef<(() => void) | null>(null);
 
@@ -169,8 +181,21 @@ export function ShowScreen({
     Boolean(nextRemixRender)
   );
   const activeAssetId = renderableVideoSlots[activeVideoSlot]?.assetId ?? null;
+  const holdForAuthoritativeCommit =
+    shouldHoldPlaybackForAuthoritativeCommit({
+      awaitingAssetId: awaitingAuthoritativeCommit?.assetId,
+      baselineCurrentAssetId:
+        awaitingAuthoritativeCommit?.baselineCurrentAssetId,
+      currentAssetId: currentAsset?.id ?? null,
+      playbackMutationsEnabled
+    });
   const playableAssets = session.visualAssets.filter(
     (asset): asset is PlayableQueuedAsset => Boolean(asset?.id && asset.publicUrl)
+  );
+  const localRotationAsset = getNextPlaybackRotationAsset(
+    playableAssets,
+    activeAssetId,
+    playableAssets.length
   );
   const requestedAsset =
     requestedAssetId && requestedAssetId !== activeAssetId
@@ -180,20 +205,29 @@ export function ShowScreen({
     currentAsset,
     activeAssetId,
     nextAsset?.id,
-    locallyAdvancedAssetIdRef.current
+    locallyAdvancedAssetIdRef.current,
+    localRotationAuthoritativeAssetIdRef.current
   );
-  const authoritativeNextAsset =
-    currentAsset?.id === activeAssetId &&
-    nextAsset?.id &&
-    nextAsset.id !== activeAssetId
-      ? nextAsset
-      : null;
-  const candidateAsset = getShowPlaybackCandidate({
+  const authoritativeNextAsset = getAuthoritativeNextPlaybackCandidate({
+    currentAssetId: currentAsset?.id,
+    activeAssetId,
+    nextAsset,
+    localRotationAuthoritativeAssetId:
+      localRotationAuthoritativeAssetIdRef.current
+  });
+  const playbackCandidate = getShowPlaybackCandidate({
     authoritativeCurrentAsset,
     requestedAsset,
     authoritativeNextAsset,
-    isMonitor: monitorMode
+    localRotationAsset,
+    isMonitor: monitorMode,
+    holdForAuthoritativeCommit
   });
+  const candidateAsset = playbackCandidate?.asset ?? null;
+  const cueCandidateAsset =
+    playbackCandidate?.source === "authoritative-next"
+      ? playbackCandidate.asset
+      : null;
   const cueSyncedPlaybackActive = isCueSyncedPlaybackActive({
     audioSyncConnected: audioSync.connected,
     autoTakeOnCue: audioSync.autoTakeOnCue
@@ -232,11 +266,30 @@ export function ShowScreen({
   useEffect(() => {
     if (
       locallyAdvancedAssetIdRef.current &&
-      currentAsset?.id === activeAssetId
+      currentAsset?.id === locallyAdvancedAssetIdRef.current
     ) {
       locallyAdvancedAssetIdRef.current = null;
     }
-  }, [activeAssetId, currentAsset?.id]);
+
+    if (
+      localRotationAuthoritativeAssetIdRef.current &&
+      currentAsset?.id === activeAssetId
+    ) {
+      localRotationAuthoritativeAssetIdRef.current = null;
+    }
+
+    if (
+      awaitingAuthoritativeCommit &&
+      (currentAsset?.id ?? null) !==
+        awaitingAuthoritativeCommit.baselineCurrentAssetId
+    ) {
+      setAwaitingAuthoritativeCommit(null);
+    }
+  }, [
+    activeAssetId,
+    awaitingAuthoritativeCommit,
+    currentAsset?.id
+  ]);
 
   useAudioReactiveVisualEffect({
     active: audioSync.connected,
@@ -338,7 +391,9 @@ export function ShowScreen({
 
     const decision = decideAutomaticCueTransition({
       autoTakeOnCue: audioSync.autoTakeOnCue,
-      nextAssetReady: Boolean(candidateAsset?.id && candidateAsset.publicUrl)
+      nextAssetReady: Boolean(
+        cueCandidateAsset?.id && cueCandidateAsset.publicUrl
+      )
     });
 
     if (decision === "wait-for-remix") {
@@ -347,36 +402,43 @@ export function ShowScreen({
 
     handledCueIdRef.current = cue.id;
 
-    if (decision === "take-remix" && candidateAsset?.id) {
-      authorizedBoundaryAssetIdRef.current = candidateAsset.id;
+    if (decision === "take-remix" && cueCandidateAsset?.id) {
+      authorizedBoundaryAssetIdRef.current = cueCandidateAsset.id;
     }
   }, [
     audioSync.autoTakeOnCue,
     audioSync.connected,
     audioSync.lastCue,
-    candidateAsset?.id,
-    candidateAsset?.publicUrl,
+    cueCandidateAsset?.id,
+    cueCandidateAsset?.publicUrl,
     playbackMutationsEnabled
   ]);
 
   useEffect(() => {
     const requestId = audioSync.manualTakeRequestId;
 
-    if (
-      !playbackMutationsEnabled ||
-      !requestId ||
-      requestId === handledManualTakeIdRef.current
-    ) {
+    if (!playbackMutationsEnabled) {
       return;
     }
 
     const selectedAssetId = audioSync.manualTakeAssetId ?? nextAsset?.id ?? null;
+    const decision = decideManualTakeRequest({
+      requestId,
+      handledRequestId: handledManualTakeIdRef.current,
+      selectedAssetId,
+      activeAssetId
+    });
 
-    if (!selectedAssetId || selectedAssetId === activeAssetId) {
+    if (decision === "ignore" || decision === "wait-for-asset" || !requestId) {
       return;
     }
 
     handledManualTakeIdRef.current = requestId;
+
+    if (decision === "acknowledge-active" || !selectedAssetId) {
+      return;
+    }
+
     authorizedBoundaryAssetIdRef.current = selectedAssetId;
     setRequestedAssetId(selectedAssetId);
   }, [
@@ -410,7 +472,8 @@ export function ShowScreen({
 
     if (
       existingTransition?.assetId === asset.id &&
-      existingTransition.videoSlot === videoSlot
+      existingTransition.videoSlot === videoSlot &&
+      existingTransition.source === playbackCandidate?.source
     ) {
       return;
     }
@@ -418,6 +481,7 @@ export function ShowScreen({
     const transition: QueuedTransition = {
       assetId: asset.id,
       assetStatus: asset.status,
+      source: playbackCandidate?.source ?? "local-rotation",
       nickname:
         asset.sourceSubmission?.source === "web"
           ? asset.sourceSubmission.sender?.trim() || null
@@ -464,7 +528,8 @@ export function ShowScreen({
     candidateAsset?.sourceSubmission?.referenceImageUrl,
     candidateAsset?.sourceSubmission?.sender,
     candidateAsset?.sourceSubmission?.source,
-    candidateAsset?.status
+    candidateAsset?.status,
+    playbackCandidate?.source
   ]);
 
   useEffect(() => {
@@ -621,6 +686,50 @@ export function ShowScreen({
     [playbackMutationsEnabled, session.id]
   );
 
+  useEffect(() => {
+    const shouldCommitVisibleNext = shouldCommitVisibleAuthoritativeNext({
+      currentAssetId: currentAsset?.id,
+      activeAssetId,
+      nextAssetId: nextAsset?.id,
+      localRotationAuthoritativeAssetId:
+        localRotationAuthoritativeAssetIdRef.current,
+      playbackMutationsEnabled
+    });
+
+    if (!shouldCommitVisibleNext || !activeAssetId) {
+      if (
+        currentAsset?.id === activeAssetId ||
+        nextAsset?.id !== activeAssetId
+      ) {
+        visibleAuthoritativeCommitAssetIdRef.current = null;
+      }
+
+      return;
+    }
+
+    if (visibleAuthoritativeCommitAssetIdRef.current === activeAssetId) {
+      return;
+    }
+
+    visibleAuthoritativeCommitAssetIdRef.current = activeAssetId;
+    locallyAdvancedAssetIdRef.current = activeAssetId;
+    localRotationAuthoritativeAssetIdRef.current = null;
+    standbyTransitionRef.current = null;
+    standbyReadyAssetIdRef.current = null;
+    setStandbyTransition(null);
+    setAwaitingAuthoritativeCommit({
+      assetId: activeAssetId,
+      baselineCurrentAssetId: currentAsset?.id ?? null
+    });
+    commitPlaybackTransition(activeAssetId);
+  }, [
+    activeAssetId,
+    commitPlaybackTransition,
+    currentAsset?.id,
+    nextAsset?.id,
+    playbackMutationsEnabled
+  ]);
+
   const handleVideoBoundary = useCallback(
     (videoSlot: VideoSlotIndex, outgoingVideo: HTMLVideoElement) => {
       if (
@@ -636,6 +745,7 @@ export function ShowScreen({
         promptRevealRef.current?.assetId === transition.assetId;
       const boundaryAuthorized = shouldHandoffPreparedPlaybackAtBoundary({
         isMonitor: monitorMode,
+        localRotation: transition?.source === "local-rotation",
         audioSyncConnected: cueSyncedPlaybackActive,
         candidateAssetId: transition?.assetId ?? null,
         authorizedAssetId:
@@ -666,14 +776,30 @@ export function ShowScreen({
       handoffInFlightRef.current = true;
 
       try {
+        const shouldCommitAuthoritativePlayback =
+          shouldCommitShowPlaybackTransition({
+            source: transition.source,
+            playbackMutationsEnabled
+          });
+
         outgoingVideo.pause();
         introducedAssetIdsRef.current?.add(transition.assetId);
         activeVideoSlotRef.current = transition.videoSlot;
         standbyTransitionRef.current = null;
         standbyReadyAssetIdRef.current = null;
         authorizedBoundaryAssetIdRef.current = null;
-        if (playbackMutationsEnabled) {
+        if (shouldCommitAuthoritativePlayback) {
           locallyAdvancedAssetIdRef.current = transition.assetId;
+          localRotationAuthoritativeAssetIdRef.current = null;
+          setAwaitingAuthoritativeCommit({
+            assetId: transition.assetId,
+            baselineCurrentAssetId: currentAsset?.id ?? null
+          });
+        } else if (transition.source === "local-rotation") {
+          localRotationAuthoritativeAssetIdRef.current =
+            currentAsset?.id ?? null;
+        } else {
+          localRotationAuthoritativeAssetIdRef.current = null;
         }
 
         promotedPlaybackAssetIdRef.current = transition.assetId;
@@ -720,7 +846,9 @@ export function ShowScreen({
           });
         });
 
-        commitPlaybackTransition(transition.assetId);
+        if (shouldCommitAuthoritativePlayback) {
+          commitPlaybackTransition(transition.assetId);
+        }
       } catch (error) {
         incomingVideo.pause();
         void restartVideoAtBoundary(outgoingVideo);
@@ -736,6 +864,7 @@ export function ShowScreen({
       authoritativeCurrentAsset?.id,
       commitPlaybackTransition,
       cueSyncedPlaybackActive,
+      currentAsset?.id,
       getVideoElement,
       monitorMode,
       playbackMutationsEnabled

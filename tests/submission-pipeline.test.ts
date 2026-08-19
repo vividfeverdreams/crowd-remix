@@ -10,13 +10,16 @@ const mocks = vi.hoisted(() => {
     createAsset: vi.fn(),
     createJob: vi.fn(),
     updateJob: vi.fn(),
+    updateAsset: vi.fn(),
     updateManyJobs: vi.fn(),
     claimSubmission: vi.fn(),
     promoteOldestReadyAsset: vi.fn(),
     takePlaybackAsset: vi.fn(),
     reconcileRenderJob: vi.fn(),
     completeGeminiVideoRender: vi.fn(),
-    startVideoRender: vi.fn()
+    failRenderJob: vi.fn(),
+    startVideoRender: vi.fn(),
+    directVideoPrompt: vi.fn()
   };
   const transactionClient = {
     dJSession: {
@@ -29,10 +32,12 @@ const mocks = vi.hoisted(() => {
     },
     renderJob: {
       create: values.createJob,
-      findFirst: values.findGenerationHead
+      findFirst: values.findGenerationHead,
+      update: values.updateJob
     },
     visualAsset: {
-      create: values.createAsset
+      create: values.createAsset,
+      update: values.updateAsset
     }
   };
 
@@ -68,7 +73,7 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/rendering", () => ({
   completeGeminiVideoRender: mocks.completeGeminiVideoRender,
-  failRenderJob: vi.fn(),
+  failRenderJob: mocks.failRenderJob,
   formatVideoModerationFailureReason: (message: string) => message,
   isVideoModerationError: vi.fn().mockReturnValue(false),
   reconcileRenderJob: mocks.reconcileRenderJob,
@@ -97,6 +102,10 @@ vi.mock("@/lib/audit", () => ({
   recordAuditEvent: vi.fn()
 }));
 
+vi.mock("@/lib/video-prompt-director", () => ({
+  directVideoPrompt: mocks.directVideoPrompt
+}));
+
 import {
   attemptAutomatedSelection,
   queueAutomatedRender,
@@ -106,6 +115,12 @@ import {
   readyPlaybackStallMs,
   shouldRecoverReadyPlaybackAsset
 } from "@/lib/playback-transition";
+import {
+  providerArtistCameraPriorityRequirement,
+  providerCameraContinuityRequirement,
+  providerSeamlessLoopRequirement,
+  providerVenueSafetyRequirement
+} from "@/lib/video-prompt-budget";
 
 describe("ready playback recovery", () => {
   it("preserves a freshly staged next asset for the show introduction", () => {
@@ -160,9 +175,17 @@ describe("submission render queue", () => {
     mocks.claimSubmission.mockResolvedValue({
       count: 1
     });
+    mocks.updateJob.mockResolvedValue({});
+    mocks.updateAsset.mockResolvedValue({});
+    mocks.directVideoPrompt.mockImplementation(async (input) => ({
+      prompt: input.assessedPrompt,
+      sourceAnalyzed: false,
+      fallbackReason: "test_fallback"
+    }));
     mocks.findGenerationHead.mockResolvedValue({
       outputAsset: {
         id: "asset-current",
+        promptText: "Current source prompt",
         sourceVideoId: "file_current",
         publicUrl: "https://example.com/current.mp4",
         status: "live"
@@ -261,7 +284,7 @@ describe("submission render queue", () => {
     expect(mocks.startVideoRender).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "remix",
-        prompt: "Compiled private model prompt",
+        prompt: expect.stringContaining("Compiled private model prompt"),
         remixReferenceImageUrl: "https://example.com/reference.jpg",
         videoModel: "seedance2",
         durationSeconds: 6
@@ -347,7 +370,7 @@ describe("submission render queue", () => {
     expect(mocks.startVideoRender).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "remix",
-        prompt: "A fresh audience remix",
+        prompt: expect.stringContaining("A fresh audience remix"),
         sourceVideoId: "file_current"
       })
     );
@@ -427,6 +450,7 @@ describe("submission render queue", () => {
         outputAsset: {
           select: {
             id: true,
+            promptText: true,
             publicUrl: true,
             sourceVideoId: true,
             status: true
@@ -448,6 +472,406 @@ describe("submission render queue", () => {
         sourceVideoUrl: "https://example.com/remix-2.mp4"
       })
     );
+  });
+
+  it("budgets a 900-character directed prompt and persists exactly what it dispatches", async () => {
+    const directedPrompt =
+      `Keep the crowd-requested locked static camera. ${"D".repeat(900)}`.slice(
+        0,
+        900
+      );
+    mocks.findGenerationHead.mockResolvedValue({
+      outputAsset: {
+        id: "asset-remix-2",
+        promptText: "Current chrome canyon prompt",
+        sourceVideoId: "v1_remix-2",
+        publicUrl: "https://example.com/remix-2.mp4",
+        status: "archived"
+      }
+    });
+    mocks.findSession.mockResolvedValue({
+      id: "session-1",
+      userId: "user-1",
+      updatedAt: new Date("2026-08-19T10:00:00.000Z"),
+      artistName: "Neon Echo",
+      trackName: "Skyline Pressure",
+      creativeBible: "Reflective dream architecture",
+      allowedMotifs: "prisms",
+      bannedTerms: "logos",
+      colorPalette: "cobalt and ember",
+      motionRules: "fast clockwise orbit despite conflicting crowd camera direction",
+      artistControlEnabled: true,
+      venueSafeMode: true,
+      basePrompt: "An endless mirrored desert",
+      imageReferenceUrl: null,
+      videoModel: "seedance2",
+      videoDurationSeconds: 8,
+      playbackState: {
+        currentAssetId: "asset-older-live",
+        nextAssetId: null,
+        currentAsset: null
+      },
+      renderJobs: [],
+      visualAssets: []
+    });
+    mocks.findSubmission.mockResolvedValue({
+      rawText: "Make it bloom into paper planets",
+      referenceImageUrl: null
+    });
+    mocks.createAsset.mockResolvedValue({ id: "asset-remix-3" });
+    mocks.createJob.mockResolvedValue({ id: "render-remix-3" });
+    mocks.directVideoPrompt.mockResolvedValue({
+      prompt: directedPrompt,
+      sourceAnalyzed: true,
+      fallbackReason: null
+    });
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "seedance-request-3",
+      outputUri: null,
+      strategy: "runway_video_to_video"
+    });
+
+    await queueAutomatedRender(
+      "session-1",
+      "submission-3",
+      "remix",
+      "Assessed paper-planet transformation"
+    );
+
+    expect(mocks.directVideoPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "test-api-key",
+        sourceAssetId: "asset-remix-2",
+        sourceVideoUrl: "https://example.com/remix-2.mp4",
+        originalPrompt: "An endless mirrored desert",
+        currentPrompt: "Current chrome canyon prompt",
+        incomingPrompt: "Make it bloom into paper planets",
+        assessedPrompt: "Assessed paper-planet transformation",
+        videoModel: "seedance2"
+      })
+    );
+    const finalProviderPrompt = (
+      mocks.startVideoRender.mock.calls[0]?.[0] as { prompt: string }
+    ).prompt;
+
+    expect(directedPrompt).toHaveLength(900);
+    expect(finalProviderPrompt).toContain("crowd-requested locked static camera");
+    expect(finalProviderPrompt).toContain(
+      "fast clockwise orbit despite conflicting crowd camera direction"
+    );
+    expect(finalProviderPrompt).toContain(
+      providerArtistCameraPriorityRequirement
+    );
+    expect(finalProviderPrompt).toContain(providerSeamlessLoopRequirement);
+    expect(finalProviderPrompt).toContain(providerVenueSafetyRequirement);
+    expect(finalProviderPrompt.length).toBeLessThanOrEqual(1_000);
+    expect(mocks.updateJob).toHaveBeenCalledWith({
+      where: {
+        id: "render-remix-3"
+      },
+      data: {
+        promptText: finalProviderPrompt
+      }
+    });
+    expect(mocks.updateAsset).toHaveBeenCalledWith({
+      where: {
+        id: "asset-remix-3"
+      },
+      data: {
+        promptText: finalProviderPrompt
+      }
+    });
+    expect(mocks.startVideoRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: finalProviderPrompt
+      })
+    );
+  });
+
+  it("adds artist camera rules to a long seed without imposing a venue clause when disabled", async () => {
+    const motionRules =
+      "Locked-off static camera for the whole clip; pulse only the prism lighting";
+    mocks.findSession.mockResolvedValue({
+      id: "session-seed",
+      userId: "user-1",
+      updatedAt: new Date("2026-08-19T11:00:00.000Z"),
+      motionRules,
+      artistControlEnabled: false,
+      venueSafeMode: false,
+      imageReferenceUrl: null,
+      videoModel: "seedance2",
+      videoDurationSeconds: 8,
+      playbackState: {
+        currentAssetId: null,
+        nextAssetId: null,
+        currentAsset: null
+      },
+      renderJobs: [],
+      visualAssets: []
+    });
+    mocks.createAsset.mockResolvedValue({ id: "asset-seed" });
+    mocks.createJob.mockResolvedValue({ id: "render-seed" });
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "seed-request",
+      outputUri: null,
+      strategy: "runway_text_to_video"
+    });
+
+    await queueAutomatedRender(
+      "session-seed",
+      null,
+      "seed",
+      "A prismatic city made from liquid mirrors. ".repeat(40)
+    );
+
+    const finalProviderPrompt = (
+      mocks.startVideoRender.mock.calls[0]?.[0] as { prompt: string }
+    ).prompt;
+
+    expect(mocks.directVideoPrompt).not.toHaveBeenCalled();
+    expect(mocks.findGenerationHead).not.toHaveBeenCalled();
+    expect(mocks.findSubmission).not.toHaveBeenCalled();
+    expect(mocks.claimSubmission).not.toHaveBeenCalled();
+    expect(finalProviderPrompt).toContain(motionRules);
+    expect(finalProviderPrompt).toContain(providerSeamlessLoopRequirement);
+    expect(finalProviderPrompt).toContain("leave it unrestricted");
+    expect(finalProviderPrompt).not.toContain(providerVenueSafetyRequirement);
+    expect(finalProviderPrompt.length).toBeLessThanOrEqual(1_000);
+    expect(mocks.updateJob).toHaveBeenCalledWith({
+      where: { id: "render-seed" },
+      data: { promptText: finalProviderPrompt }
+    });
+    expect(mocks.updateAsset).toHaveBeenCalledWith({
+      where: { id: "asset-seed" },
+      data: { promptText: finalProviderPrompt }
+    });
+  });
+
+  it("keeps artist motion rules for a manual fallback even when artist control is off", async () => {
+    const motionRules = "Rapid crane rises with a snap zoom on every downbeat";
+    mocks.findGenerationHead.mockResolvedValue({
+      outputAsset: {
+        id: "asset-live",
+        promptText: "Current source prompt",
+        sourceVideoId: "v1_live",
+        publicUrl: "https://example.com/live.mp4",
+        status: "live"
+      }
+    });
+    mocks.findSession.mockResolvedValue({
+      id: "session-manual",
+      userId: "user-1",
+      updatedAt: new Date("2026-08-19T11:10:00.000Z"),
+      artistName: "Neon Echo",
+      trackName: "Skyline Pressure",
+      creativeBible: "Reflective dream architecture",
+      allowedMotifs: "prisms",
+      bannedTerms: "logos",
+      colorPalette: "cobalt and ember",
+      motionRules,
+      basePrompt: "An endless mirrored desert",
+      artistControlEnabled: false,
+      venueSafeMode: true,
+      imageReferenceUrl: null,
+      videoModel: "seedance2",
+      videoDurationSeconds: 8,
+      playbackState: {
+        currentAssetId: "asset-live",
+        nextAssetId: null,
+        currentAsset: null
+      },
+      renderJobs: [],
+      visualAssets: []
+    });
+    mocks.createAsset.mockResolvedValue({ id: "asset-manual" });
+    mocks.createJob.mockResolvedValue({ id: "render-manual" });
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "manual-request",
+      outputUri: null,
+      strategy: "runway_video_to_video"
+    });
+
+    await queueAutomatedRender(
+      "session-manual",
+      null,
+      "remix",
+      "Shift the active loop into an ember prism cathedral"
+    );
+
+    const finalProviderPrompt = (
+      mocks.startVideoRender.mock.calls[0]?.[0] as { prompt: string }
+    ).prompt;
+
+    expect(mocks.findSubmission).not.toHaveBeenCalled();
+    expect(mocks.claimSubmission).not.toHaveBeenCalled();
+    expect(mocks.directVideoPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        incomingPrompt: "Shift the active loop into an ember prism cathedral"
+      })
+    );
+    expect(finalProviderPrompt).toContain(motionRules);
+    expect(finalProviderPrompt).toContain(
+      providerArtistCameraPriorityRequirement
+    );
+    expect(finalProviderPrompt).toContain(providerVenueSafetyRequirement);
+    expect(finalProviderPrompt.length).toBeLessThanOrEqual(1_000);
+  });
+
+  it("omits session motion rules for a raw audience remix while preserving audience camera direction", async () => {
+    const artistRuleSentinel = "ARTIST_LOCKED_CAMERA_SENTINEL";
+    mocks.findGenerationHead.mockResolvedValue({
+      outputAsset: {
+        id: "asset-raw-source",
+        promptText: "Current source prompt",
+        sourceVideoId: "v1_raw_source",
+        publicUrl: "https://example.com/raw-source.mp4",
+        status: "live"
+      }
+    });
+    mocks.findSession.mockResolvedValue({
+      id: "session-raw",
+      userId: "user-1",
+      updatedAt: new Date("2026-08-19T11:20:00.000Z"),
+      artistName: "Neon Echo",
+      trackName: "Skyline Pressure",
+      creativeBible: "Reflective dream architecture",
+      allowedMotifs: "prisms",
+      bannedTerms: "logos",
+      colorPalette: "cobalt and ember",
+      motionRules: artistRuleSentinel,
+      basePrompt: "An endless mirrored desert",
+      artistControlEnabled: false,
+      venueSafeMode: false,
+      imageReferenceUrl: null,
+      videoModel: "seedance2",
+      videoDurationSeconds: 8,
+      playbackState: {
+        currentAssetId: "asset-raw-source",
+        nextAssetId: null,
+        currentAsset: null
+      },
+      renderJobs: [],
+      visualAssets: []
+    });
+    mocks.findSubmission.mockResolvedValue({
+      rawText: "Use a fast clockwise audience-requested orbit",
+      referenceImageUrl: null
+    });
+    mocks.createAsset.mockResolvedValue({ id: "asset-raw" });
+    mocks.createJob.mockResolvedValue({ id: "render-raw" });
+    mocks.directVideoPrompt.mockResolvedValue({
+      prompt: "Use a fast clockwise audience-requested orbit through the chrome canyon",
+      sourceAnalyzed: true,
+      fallbackReason: null
+    });
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "raw-request",
+      outputUri: null,
+      strategy: "runway_video_to_video"
+    });
+
+    await queueAutomatedRender(
+      "session-raw",
+      "submission-raw",
+      "remix",
+      "Use a fast clockwise audience-requested orbit"
+    );
+
+    const finalProviderPrompt = (
+      mocks.startVideoRender.mock.calls[0]?.[0] as { prompt: string }
+    ).prompt;
+
+    expect(finalProviderPrompt).toContain("fast clockwise audience-requested orbit");
+    expect(finalProviderPrompt).not.toContain(artistRuleSentinel);
+    expect(finalProviderPrompt).not.toContain("Enabled artist motion/camera rules");
+    expect(finalProviderPrompt).toContain(providerCameraContinuityRequirement);
+    expect(finalProviderPrompt).toContain(providerSeamlessLoopRequirement);
+    expect(finalProviderPrompt).not.toContain(providerVenueSafetyRequirement);
+    expect(finalProviderPrompt.length).toBeLessThanOrEqual(1_000);
+    expect(mocks.updateJob).toHaveBeenCalledWith({
+      where: { id: "render-raw" },
+      data: { promptText: finalProviderPrompt }
+    });
+    expect(mocks.updateAsset).toHaveBeenCalledWith({
+      where: { id: "asset-raw" },
+      data: { promptText: finalProviderPrompt }
+    });
+  });
+
+  it("fails closed when final prompt persistence transiently fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.findGenerationHead.mockResolvedValue({
+      outputAsset: {
+        id: "asset-remix-2",
+        promptText: "Current source prompt",
+        sourceVideoId: "v1_remix-2",
+        publicUrl: "https://example.com/remix-2.mp4",
+        status: "live"
+      }
+    });
+    mocks.findSession.mockResolvedValue({
+      id: "session-1",
+      userId: "user-1",
+      updatedAt: new Date("2026-08-19T10:00:00.000Z"),
+      artistName: "Neon Echo",
+      trackName: "Skyline Pressure",
+      creativeBible: "Reflective dream architecture",
+      allowedMotifs: "prisms",
+      bannedTerms: "logos",
+      colorPalette: "cobalt and ember",
+      motionRules: "clockwise orbit",
+      basePrompt: "An endless mirrored desert",
+      imageReferenceUrl: null,
+      videoModel: "seedance2",
+      videoDurationSeconds: 8,
+      playbackState: {
+        currentAssetId: "asset-remix-2",
+        nextAssetId: null,
+        currentAsset: null
+      },
+      renderJobs: [],
+      visualAssets: []
+    });
+    mocks.createAsset.mockResolvedValue({ id: "asset-remix-3" });
+    mocks.createJob.mockResolvedValue({ id: "render-remix-3" });
+    mocks.directVideoPrompt.mockResolvedValue({
+      prompt: "Analyzed continuation through the chrome canyon",
+      sourceAnalyzed: true,
+      fallbackReason: null
+    });
+    mocks.updateJob.mockRejectedValueOnce(new Error("transient database error"));
+    mocks.startVideoRender.mockResolvedValue({
+      kind: "live",
+      requestId: "seedance-request-3",
+      outputUri: null,
+      strategy: "runway_video_to_video"
+    });
+
+    await expect(
+      queueAutomatedRender(
+        "session-1",
+        null,
+        "remix",
+        "Approved fallback prompt"
+      )
+    ).resolves.toBeNull();
+
+    expect(mocks.startVideoRender).not.toHaveBeenCalled();
+    expect(mocks.failRenderJob).toHaveBeenCalledWith(
+      "render-remix-3",
+      "The final provider prompt could not be persisted."
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[provider-prompt] could not persist final prompt",
+      expect.objectContaining({
+        renderJobId: "render-remix-3"
+      })
+    );
+    warn.mockRestore();
   });
 
   it("never revives a render that became terminal before Gemini returned", async () => {

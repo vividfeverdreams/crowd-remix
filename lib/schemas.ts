@@ -103,7 +103,7 @@ export const sessionPrefillSchema = z.object({
     "A concise comma-separated palette with evocative, production-usable color names."
   ),
   motionRules: requiredText("Motion rules", 300).describe(
-    "Clear rules for camera movement, rhythm, transitions, and what motion should avoid."
+    "Artist-directed rhythm and transition guidance. Include a camera style only when the user's idea explicitly asks for one; otherwise leave camera behavior unrestricted."
   ),
   basePrompt: requiredText("Base prompt", 1200).describe(
     "A polished, standalone prompt for the first looping cinematic concert visual."

@@ -95,7 +95,7 @@ describe("show monitor mode", () => {
     expect(canMutateShowPlayback(false)).toBe(true);
   });
 
-  it("makes monitor playback read-only while allowing media to keep looping", () => {
+  it("keeps monitor playback read-only without blocking local media advances", () => {
     expect(canMutateShowPlayback(true)).toBe(false);
     expect(
       shouldAdvanceShowPlaybackAtVideoEnd({
@@ -104,7 +104,7 @@ describe("show monitor mode", () => {
         audioSyncConnected: false,
         nextAssetReady: true
       })
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldAdvanceShowPlaybackAtVideoEnd({
         isMonitor: false,

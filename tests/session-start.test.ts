@@ -47,6 +47,7 @@ vi.mock("@/lib/submission-pipeline", () => ({
 }));
 
 import {
+  buildFallbackRemixPrompt,
   initialGenerationQueueFailureMessage,
   startDjSession
 } from "@/lib/session-service";
@@ -63,6 +64,7 @@ describe("starting a session's first video", () => {
       id: "session-1",
       name: "Live set",
       basePrompt: "A liquid chrome dream",
+      motionRules: "Locked-off static camera; pulse the light on phrase changes",
       status: "live",
       startedAt,
       playbackState: {
@@ -183,6 +185,28 @@ describe("starting a session's first video", () => {
 
     await startDjSession("session-1", "user-1");
 
+    expect(mocks.queueAutomatedRender).toHaveBeenCalledWith(
+      "session-1",
+      null,
+      "seed",
+      "A liquid chrome dream"
+    );
     expect(mocks.findGenerationState).not.toHaveBeenCalled();
+  });
+});
+
+describe("fallback remix creative prompt", () => {
+  it("keeps the requested visual reset without duplicating provider requirements", () => {
+    const prompt = buildFallbackRemixPrompt({
+      basePrompt: "A molten glass city loops through ultraviolet rain."
+    });
+
+    expect(prompt).toContain("A molten glass city loops through ultraviolet rain.");
+    expect(prompt).toContain("fresh geometric pulse");
+    expect(prompt).toContain("visually coherent");
+    expect(prompt).not.toContain("Follow the artist's motion and camera rules");
+    expect(prompt).not.toContain("venue-safe");
+    expect(prompt).not.toContain("calmer geometric pulse");
+    expect(prompt).not.toContain("resilient club-safe motion");
   });
 });

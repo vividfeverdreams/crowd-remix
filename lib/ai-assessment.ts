@@ -3,6 +3,10 @@ import { env } from "@/lib/env";
 import { getOpenAiClient } from "@/lib/openai-client";
 import { getEffectiveOpenAiApiKeyForUser } from "@/lib/openai-key-store";
 import { clamp, normalizePromptText, splitList } from "@/lib/utils";
+import {
+  assessedVideoPromptCharacterBudget,
+  composeVideoPrompt
+} from "@/lib/video-prompt-budget";
 
 const assessmentSchema = z.object({
   decision: z.enum(["approved", "rejected"]),
@@ -37,6 +41,16 @@ type AssessmentInput = {
 };
 
 export type SubmissionAssessment = z.infer<typeof assessmentSchema>;
+
+export const submissionAssessmentInstructions = [
+  "You are the crowd prompt safety and remix-ranking engine for a live DJ visual platform.",
+  "You must keep every approved prompt within the DJ's visual DNA.",
+  "When session.allowedMotifs is empty, motifs are intentionally open-ended: do not reject or lower a score just because an idea uses an unlisted motif.",
+  "Reject prompts that are unsafe, spammy, off-theme, ask for real people, public figures, copyrighted characters, copyrighted music references, or anything that is not venue-safe.",
+  "For approved prompts, rewrite the input into a single focused remix instruction that creates a visibly new scene while carrying forward the session's visual DNA and seamless-loop continuity.",
+  "Honor explicit camera direction in the session motion rules or crowd request. When neither specifies camera behavior, leave it open for movement that serves the requested transformation instead of inventing a restriction.",
+  "Return only valid JSON that matches the provided schema."
+].join(" ");
 
 const hardBlockedTerms = [
   "nazi",
@@ -75,14 +89,7 @@ export async function assessSubmission(input: AssessmentInput): Promise<Submissi
     const response = await client.responses.create({
       model: env.openAiTextModel,
       temperature: 0.4,
-      instructions: [
-        "You are the crowd prompt safety and remix-ranking engine for a live DJ visual platform.",
-        "You must keep every approved prompt within the DJ's visual DNA.",
-        "When session.allowedMotifs is empty, motifs are intentionally open-ended: do not reject or lower a score just because an idea uses an unlisted motif.",
-        "Reject prompts that are unsafe, spammy, off-theme, ask for real people, public figures, copyrighted characters, copyrighted music references, or anything that is not venue-safe.",
-        "For approved prompts, rewrite the input into a single focused remix instruction that creates a visibly new scene while carrying forward the session's visual DNA rather than the source video's exact composition.",
-        "Return only valid JSON that matches the provided schema."
-      ].join(" "),
+      instructions: submissionAssessmentInstructions,
       input: [
         {
           role: "user",
@@ -178,11 +185,11 @@ export function rawPromptAssessment(input: AssessmentInput): SubmissionAssessmen
     flags: Array.from(flags),
     explanation:
       decision === "approved"
-        ? "Approved without AI rewriting or artist-direction scoring. The audience prompt will be sent to the session's selected video model exactly as written."
+        ? "Approved without artist-direction scoring or an intake rewrite. The audience's original words stay preserved for attribution; a source-video-aware director may adapt the private render instruction."
         : "Rejected by the venue-safe hard-safety filter before the raw prompt could be sent to the selected video model.",
     approvalReason:
       decision === "approved"
-        ? "Raw Prompt Mode: queued exactly as written."
+        ? "Raw Prompt Mode: original audience wording preserved without an intake rewrite."
         : "Did not pass the venue-safe hard-safety filter.",
     noveltyScore: decision === "approved" ? 100 : 0,
     cohesionScore: decision === "approved" ? 100 : 0,
@@ -243,15 +250,19 @@ export function heuristicAssessment(input: AssessmentInput): SubmissionAssessmen
     noveltyScore,
     cohesionScore,
     remixDeltaScore,
-    winningPrompt: [
-      `Remix the active loop for ${input.session.artistName} - ${input.session.trackName}.`,
-      `Keep the visual DNA anchored in: ${input.session.creativeBible}.`,
-      allowedMotifs.length > 0
-        ? `Preferred motifs: ${input.session.allowedMotifs}.`
-        : "Motifs are open-ended; honor the crowd idea while preserving the session's visual identity.",
-      `Palette: ${input.session.colorPalette}. Motion rules: ${input.session.motionRules}.`,
-      `Make the crowd request the dominant visible transformation: ${normalizePromptText(input.submissionText)}.`,
-      "Create a clearly different next scene while carrying forward the visual DNA, palette logic, and venue-safe abstract artistry. Do not preserve the source video's exact composition or camera path. No text overlays, no real people, no copyrighted characters."
-    ].join(" ")
+    winningPrompt: composeVideoPrompt({
+      context: [
+        `Make the crowd request the dominant visible transformation: ${normalizePromptText(input.submissionText)}.`,
+        `Remix the active loop for ${input.session.artistName} - ${input.session.trackName}.`,
+        `Keep the visual DNA anchored in: ${input.session.creativeBible}.`,
+        allowedMotifs.length > 0
+          ? `Preferred motifs: ${input.session.allowedMotifs}.`
+          : "Motifs are open-ended; honor the crowd idea while preserving the session's visual identity.",
+        `Palette: ${input.session.colorPalette}.`,
+        "Create a clearly different next scene while carrying forward the visual DNA and palette logic."
+      ],
+      requirements: [],
+      maxLength: assessedVideoPromptCharacterBudget
+    })
   };
 }

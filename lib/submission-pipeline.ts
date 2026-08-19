@@ -40,6 +40,8 @@ import {
   normalizeVideoDurationSecondsForModel,
   normalizeVideoModelId
 } from "@/lib/video-models";
+import { directVideoPrompt } from "@/lib/video-prompt-director";
+import { composeFinalProviderVideoPrompt } from "@/lib/video-prompt-budget";
 
 type IntakeInput = {
   sessionCode: string;
@@ -280,7 +282,7 @@ export async function ingestSubmission(input: IntakeInput) {
       decision === "approved"
         ? session.artistControlEnabled
           ? "Your remix is in the mix. Venue-safe AI is scoring the queue now."
-          : "Your remix is queued exactly as written."
+          : "Your original remix is preserved in the queue. The video director will adapt only the private render instruction to the current clip."
         : "That idea did not pass the venue-safe remix filter.",
     submissionId: submission.id
   };
@@ -482,6 +484,7 @@ export async function queueAutomatedRender(
                 outputAsset: {
                   select: {
                     id: true,
+                    promptText: true,
                     publicUrl: true,
                     sourceVideoId: true,
                     status: true
@@ -496,6 +499,7 @@ export async function queueAutomatedRender(
                 id: submissionId
               },
               select: {
+                rawText: true,
                 referenceImageUrl: true
               }
             })
@@ -594,6 +598,7 @@ export async function queueAutomatedRender(
         sourceMissing: false as const,
         durationSeconds,
         videoModel,
+        outputAsset,
         renderJob,
         session,
         sourceAsset,
@@ -625,6 +630,7 @@ export async function queueAutomatedRender(
   const {
     durationSeconds,
     videoModel,
+    outputAsset,
     renderJob,
     session,
     sourceAsset,
@@ -635,13 +641,90 @@ export async function queueAutomatedRender(
   const geminiApiKey = session.userId
     ? await getEffectiveGeminiApiKeyForUser(String(session.userId))
     : null;
+  let directedPrompt = promptText;
+
+  if (mode === "remix" && sourceAsset?.publicUrl) {
+    const directed = await directVideoPrompt({
+      apiKey: geminiApiKey,
+      sessionId,
+      sourceAssetId: sourceAsset.id,
+      sourceVideoUrl: sourceAsset.publicUrl,
+      originalPrompt: session.basePrompt,
+      currentPrompt: sourceAsset.promptText,
+      incomingPrompt: sourceSubmission?.rawText?.trim() || promptText,
+      assessedPrompt: promptText,
+      videoModel,
+      session: {
+        artistName: session.artistName,
+        trackName: session.trackName,
+        creativeBible: session.creativeBible,
+        allowedMotifs: session.allowedMotifs,
+        bannedTerms: session.bannedTerms,
+        colorPalette: session.colorPalette,
+        motionRules: session.motionRules,
+        artistControlEnabled: session.artistControlEnabled,
+        venueSafeMode: session.venueSafeMode
+      }
+    });
+
+    directedPrompt = directed.prompt;
+  }
+
+  const includeArtistMotionRules =
+    mode === "seed" ||
+    submissionId === null ||
+    session.artistControlEnabled !== false;
+  const providerPrompt = composeFinalProviderVideoPrompt({
+    creativePrompt: directedPrompt,
+    motionRules: session.motionRules,
+    includeArtistMotionRules,
+    venueSafeMode: session.venueSafeMode !== false
+  });
+
+  try {
+    await db.$transaction(async (tx: any) => {
+      await tx.renderJob.update({
+        where: {
+          id: renderJob.id
+        },
+        data: {
+          promptText: providerPrompt
+        }
+      });
+      await tx.visualAsset.update({
+        where: {
+          id: outputAsset.id
+        },
+        data: {
+          promptText: providerPrompt
+        }
+      });
+    });
+  } catch (error) {
+    const failureReason = "The final provider prompt could not be persisted.";
+
+    console.warn("[provider-prompt] could not persist final prompt", {
+      sessionId,
+      renderJobId: renderJob.id,
+      sourceAssetId: sourceAsset?.id ?? null,
+      reason: error instanceof Error ? error.name : "unknown_error"
+    });
+    await failRenderJob(renderJob.id, failureReason);
+    await recordAuditEvent({
+      type: "render.prompt_persistence_failed",
+      summary: "Could not persist the final provider prompt",
+      details: failureReason,
+      sessionId
+    });
+    return null;
+  }
 
   let started;
 
   try {
     started = await startVideoRender({
       mode,
-      prompt: promptText,
+      prompt: providerPrompt,
       sourceVideoId: sourceAsset?.sourceVideoId,
       sourceVideoUrl: sourceAsset?.publicUrl,
       imageReferenceUrl: session.imageReferenceUrl,

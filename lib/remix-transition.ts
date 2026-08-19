@@ -1,5 +1,20 @@
 export type AutomaticCueDecision = "ignore" | "wait-for-remix" | "take-remix";
+export type ManualTakeDecision =
+  | "ignore"
+  | "wait-for-asset"
+  | "acknowledge-active"
+  | "take-asset";
 export type VideoSlotIndex = 0 | 1;
+export type ShowPlaybackCandidateSource =
+  | "authoritative-current"
+  | "manual-request"
+  | "authoritative-next"
+  | "local-rotation";
+
+export type ShowPlaybackCandidate<Asset> = {
+  asset: Asset;
+  source: ShowPlaybackCandidateSource;
+};
 
 export type PlaybackRotationAsset = {
   id: string;
@@ -131,7 +146,8 @@ export function getAuthoritativePlaybackCandidate<
   currentAsset: Asset | null,
   activeAssetId: string | null | undefined,
   queuedNextAssetId?: string | null,
-  locallyAdvancedAssetId?: string | null
+  locallyAdvancedAssetId?: string | null,
+  localRotationAuthoritativeAssetId?: string | null
 ) {
   if (
     activeAssetId &&
@@ -141,25 +157,172 @@ export function getAuthoritativePlaybackCandidate<
     return null;
   }
 
+  if (
+    currentAsset?.id &&
+    currentAsset.id === localRotationAuthoritativeAssetId
+  ) {
+    return null;
+  }
+
   return currentAsset?.id && currentAsset.id !== activeAssetId
     ? currentAsset
     : null;
+}
+
+export function getAuthoritativeNextPlaybackCandidate<
+  Asset extends {
+    id: string;
+  }
+>({
+  currentAssetId,
+  activeAssetId,
+  nextAsset,
+  localRotationAuthoritativeAssetId
+}: {
+  currentAssetId: string | null | undefined;
+  activeAssetId: string | null | undefined;
+  nextAsset: Asset | null;
+  localRotationAuthoritativeAssetId: string | null | undefined;
+}) {
+  if (!nextAsset?.id || nextAsset.id === activeAssetId) {
+    return null;
+  }
+
+  const displayMatchesAuthoritativePlayback = currentAssetId === activeAssetId;
+  const displayIsLocallyRotating = Boolean(
+    currentAssetId &&
+      currentAssetId === localRotationAuthoritativeAssetId
+  );
+
+  return displayMatchesAuthoritativePlayback || displayIsLocallyRotating
+    ? nextAsset
+    : null;
+}
+
+export function shouldCommitVisibleAuthoritativeNext({
+  currentAssetId,
+  activeAssetId,
+  nextAssetId,
+  localRotationAuthoritativeAssetId,
+  playbackMutationsEnabled
+}: {
+  currentAssetId: string | null | undefined;
+  activeAssetId: string | null | undefined;
+  nextAssetId: string | null | undefined;
+  localRotationAuthoritativeAssetId: string | null | undefined;
+  playbackMutationsEnabled: boolean;
+}) {
+  return Boolean(
+    playbackMutationsEnabled &&
+      currentAssetId &&
+      currentAssetId !== activeAssetId &&
+      currentAssetId === localRotationAuthoritativeAssetId &&
+      nextAssetId &&
+      nextAssetId === activeAssetId
+  );
+}
+
+export function shouldHoldPlaybackForAuthoritativeCommit({
+  awaitingAssetId,
+  baselineCurrentAssetId,
+  currentAssetId,
+  playbackMutationsEnabled
+}: {
+  awaitingAssetId: string | null | undefined;
+  baselineCurrentAssetId: string | null | undefined;
+  currentAssetId: string | null | undefined;
+  playbackMutationsEnabled: boolean;
+}) {
+  return Boolean(
+    playbackMutationsEnabled &&
+      awaitingAssetId &&
+      currentAssetId !== awaitingAssetId &&
+      (currentAssetId ?? null) === (baselineCurrentAssetId ?? null)
+  );
 }
 
 export function getShowPlaybackCandidate<Asset>({
   authoritativeCurrentAsset,
   requestedAsset,
   authoritativeNextAsset,
-  isMonitor
+  localRotationAsset,
+  isMonitor,
+  holdForAuthoritativeCommit = false
 }: {
   authoritativeCurrentAsset: Asset | null;
   requestedAsset: Asset | null;
   authoritativeNextAsset: Asset | null;
+  localRotationAsset: Asset | null;
   isMonitor: boolean;
+  holdForAuthoritativeCommit?: boolean;
+}): ShowPlaybackCandidate<Asset> | null {
+  if (holdForAuthoritativeCommit) {
+    return null;
+  }
+
+  if (authoritativeCurrentAsset) {
+    return {
+      asset: authoritativeCurrentAsset,
+      source: "authoritative-current"
+    };
+  }
+
+  if (!isMonitor && requestedAsset) {
+    return {
+      asset: requestedAsset,
+      source: "manual-request"
+    };
+  }
+
+  if (!isMonitor && authoritativeNextAsset) {
+    return {
+      asset: authoritativeNextAsset,
+      source: "authoritative-next"
+    };
+  }
+
+  return localRotationAsset
+    ? {
+        asset: localRotationAsset,
+        source: "local-rotation"
+      }
+    : null;
+}
+
+export function decideManualTakeRequest({
+  requestId,
+  handledRequestId,
+  selectedAssetId,
+  activeAssetId
+}: {
+  requestId: string | null | undefined;
+  handledRequestId: string | null | undefined;
+  selectedAssetId: string | null | undefined;
+  activeAssetId: string | null | undefined;
+}): ManualTakeDecision {
+  if (!requestId || requestId === handledRequestId) {
+    return "ignore";
+  }
+
+  if (!selectedAssetId) {
+    return "wait-for-asset";
+  }
+
+  return selectedAssetId === activeAssetId
+    ? "acknowledge-active"
+    : "take-asset";
+}
+
+export function shouldCommitShowPlaybackTransition({
+  source,
+  playbackMutationsEnabled
+}: {
+  source: ShowPlaybackCandidateSource;
+  playbackMutationsEnabled: boolean;
 }) {
   return (
-    authoritativeCurrentAsset ??
-    (isMonitor ? null : requestedAsset ?? authoritativeNextAsset)
+    playbackMutationsEnabled &&
+    (source === "manual-request" || source === "authoritative-next")
   );
 }
 
@@ -278,11 +441,13 @@ export function shouldAdvancePlaybackAtVideoEnd({
 
 export function shouldHandoffPreparedPlaybackAtBoundary({
   isMonitor,
+  localRotation,
   audioSyncConnected,
   candidateAssetId,
   authorizedAssetId
 }: {
   isMonitor: boolean;
+  localRotation?: boolean;
   audioSyncConnected: boolean;
   candidateAssetId: string | null;
   authorizedAssetId: string | null;
@@ -293,6 +458,7 @@ export function shouldHandoffPreparedPlaybackAtBoundary({
 
   return (
     isMonitor ||
+    localRotation ||
     !audioSyncConnected ||
     authorizedAssetId === candidateAssetId
   );

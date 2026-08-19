@@ -5,6 +5,7 @@ export const env = {
   openAiTextModel: process.env.OPENAI_TEXT_MODEL ?? "gpt-5.4-mini",
   runwayApiSecret: process.env.RUNWAYML_API_SECRET ?? "",
   geminiApiKey: process.env.GEMINI_API_KEY ?? "",
+  geminiPromptModel: process.env.GEMINI_PROMPT_MODEL ?? "gemini-3.6-flash",
   geminiVideoModel: process.env.GEMINI_VIDEO_MODEL ?? "gemini-omni-flash-preview",
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
   twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? "",

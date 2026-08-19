@@ -6,11 +6,12 @@ import {
   isVideoModelId,
   type VideoModelId
 } from "@/lib/video-models";
+import { videoProviderPromptCharacterBudget } from "@/lib/video-prompt-budget";
 
 const runwayApiBaseUrl = "https://api.dev.runwayml.com/v1";
 const runwayApiVersion = "2024-11-06";
 const runwayRequestTimeoutMs = 45_000;
-const runwayPromptMaxLength = 1_000;
+const runwayPromptMaxLength = videoProviderPromptCharacterBudget;
 const runwayTaskIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

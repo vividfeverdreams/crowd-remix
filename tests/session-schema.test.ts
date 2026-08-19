@@ -229,6 +229,12 @@ describe("sessionIdeaSchema", () => {
 });
 
 describe("sessionPrefillSchema", () => {
+  it("leaves camera behavior open unless the artist explicitly directs it", () => {
+    expect(sessionPrefillSchema.shape.motionRules.description).toBe(
+      "Artist-directed rhythm and transition guidance. Include a camera style only when the user's idea explicitly asks for one; otherwise leave camera behavior unrestricted."
+    );
+  });
+
   it("accepts an AI draft containing every editable creative field", () => {
     const result = sessionPrefillSchema.safeParse({
       name: validSession.name,

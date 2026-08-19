@@ -478,7 +478,7 @@ export function SessionSetupForm() {
               <p id="artist-control-help" className="mt-2 text-sm leading-6 text-white/60">
                 {form.artistControlEnabled
                   ? "On: the application moderates, scores, and rewrites crowd ideas using your Creative Bible, motifs, palette, and motion rules."
-                  : `Off — Raw Prompt Mode: crowd remix prompts bypass artist direction and AI rewriting, then go to ${selectedVideoModel.label} exactly as written. Your base prompt still seeds the show.`}
+                  : `Off — Raw Prompt Mode: crowd ideas bypass artist-direction scoring and intake rewriting. Their original words stay visible, while a source-video-aware director adapts only the private ${selectedVideoModel.label} render instruction. Your base prompt still seeds the show.`}
               </p>
             </div>
 
@@ -582,7 +582,7 @@ export function SessionSetupForm() {
           <p className="max-w-2xl text-sm leading-7 text-white/65">
             {form.artistControlEnabled
               ? `The first live render seeds the show from your base prompt with ${selectedVideoModel.label}. After that, approved crowd prompts are rewritten into focused video edits using the same model.`
-              : `The first live render still uses your base prompt with ${selectedVideoModel.label}. After that, crowd remix prompts are sent to the same model exactly as written, with no artist-direction rewrite.`}
+              : `The first live render still uses your base prompt with ${selectedVideoModel.label}. After that, original crowd wording remains preserved for attribution while a video-aware director adapts the private render prompt to the current clip.`}
           </p>
 
           <button

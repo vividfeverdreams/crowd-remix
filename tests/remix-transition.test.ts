@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   acknowledgeAuthoritativePlaybackAsset,
   decideAutomaticCueTransition,
+  decideManualTakeRequest,
   getAudienceFacingRemixPrompt,
+  getAuthoritativeNextPlaybackCandidate,
   getAuthoritativePlaybackCandidate,
   getChronologicalPlaybackRotation,
   getIntroducedPlaybackAssetIds,
@@ -15,6 +17,9 @@ import {
   isCueSyncedPlaybackActive,
   isVideoSlotVisible,
   shouldAdvancePlaybackAtVideoEnd,
+  shouldCommitShowPlaybackTransition,
+  shouldCommitVisibleAuthoritativeNext,
+  shouldHoldPlaybackForAuthoritativeCommit,
   shouldHandoffPreparedPlaybackAtBoundary,
   shouldShowPlaybackIntroduction,
   shouldStartAutomaticPlaybackTransition,
@@ -84,6 +89,38 @@ describe("remix transition cues", () => {
     expect(getNextPlaybackRotationAsset(assets, "remix-3")?.id).toBe("remix-4");
     expect(getNextPlaybackRotationAsset(assets, "remix-6")?.id).toBe("remix-2");
     expect(getNextPlaybackRotationAsset(assets, "remix-1")?.id).toBe("remix-2");
+  });
+
+  it("cycles the seed and every playable remix when the show supplies the full asset count", () => {
+    const assets = [
+      rotationAsset("original", 0, "seed"),
+      ...Array.from({ length: 6 }, (_, index) =>
+        rotationAsset(`remix-${index + 1}`, index + 1)
+      )
+    ];
+    const visitedAssetIds: string[] = [];
+    let currentAssetId = assets[0].id;
+
+    for (let index = 0; index < assets.length; index += 1) {
+      visitedAssetIds.push(currentAssetId);
+      currentAssetId =
+        getNextPlaybackRotationAsset(
+          assets,
+          currentAssetId,
+          assets.length
+        )?.id ?? "";
+    }
+
+    expect(visitedAssetIds).toEqual([
+      "original",
+      "remix-1",
+      "remix-2",
+      "remix-3",
+      "remix-4",
+      "remix-5",
+      "remix-6"
+    ]);
+    expect(currentAssetId).toBe("original");
   });
 
   it("keeps a musical cue pending until the next remix is ready", () => {
@@ -366,54 +403,278 @@ describe("remix transition cues", () => {
     ).toBe(authoritativeAsset);
   });
 
-  it("keeps the current clip looping without an authoritative or manual candidate", () => {
+  it("suppresses only the unchanged server current during local display rotation", () => {
+    const oldServerCurrent = {
+      id: "asset-server-old"
+    };
+    const newServerCurrent = {
+      id: "asset-server-new"
+    };
+
+    expect(
+      getAuthoritativePlaybackCandidate(
+        oldServerCurrent,
+        "asset-local-rotation",
+        null,
+        null,
+        oldServerCurrent.id
+      )
+    ).toBeNull();
+    expect(
+      getAuthoritativePlaybackCandidate(
+        newServerCurrent,
+        "asset-local-rotation",
+        null,
+        null,
+        oldServerCurrent.id
+      )
+    ).toBe(newServerCurrent);
+  });
+
+  it("keeps an authoritative next asset eligible while the display rotates locally", () => {
+    const queuedNext = {
+      id: "asset-fresh-next"
+    };
+
+    expect(
+      getAuthoritativeNextPlaybackCandidate({
+        currentAssetId: "asset-server-current",
+        activeAssetId: "asset-archived-local",
+        nextAsset: queuedNext,
+        localRotationAuthoritativeAssetId: "asset-server-current"
+      })
+    ).toBe(queuedNext);
+    expect(
+      getAuthoritativeNextPlaybackCandidate({
+        currentAssetId: "asset-server-changed",
+        activeAssetId: "asset-archived-local",
+        nextAsset: queuedNext,
+        localRotationAuthoritativeAssetId: "asset-server-current"
+      })
+    ).toBeNull();
+  });
+
+  it("commits an authoritative next that is already visible through local rotation", () => {
+    const input = {
+      currentAssetId: "asset-server-current",
+      activeAssetId: "asset-fresh-next",
+      nextAssetId: "asset-fresh-next",
+      localRotationAuthoritativeAssetId: "asset-server-current",
+      playbackMutationsEnabled: true
+    };
+
+    expect(shouldCommitVisibleAuthoritativeNext(input)).toBe(true);
+    expect(
+      shouldCommitVisibleAuthoritativeNext({
+        ...input,
+        playbackMutationsEnabled: false
+      })
+    ).toBe(false);
+    expect(
+      shouldCommitVisibleAuthoritativeNext({
+        ...input,
+        nextAssetId: "asset-other-next"
+      })
+    ).toBe(false);
+  });
+
+  it("keeps the current clip looping when no authoritative, manual, or local candidate exists", () => {
     expect(
       getShowPlaybackCandidate({
         authoritativeCurrentAsset: null,
         requestedAsset: null,
         authoritativeNextAsset: null,
+        localRotationAsset: null,
         isMonitor: false
       })
     ).toBeNull();
   });
 
-  it("prioritizes server-current and explicit playback candidates without an implicit rotation", () => {
+  it("prioritizes authoritative and manual candidates ahead of local display rotation", () => {
     const serverCurrent = { id: "asset-server-current" };
     const manualRequest = { id: "asset-manual" };
     const queuedNext = { id: "asset-ready-next" };
+    const localRotation = { id: "asset-archived-local" };
 
     expect(
       getShowPlaybackCandidate({
         authoritativeCurrentAsset: serverCurrent,
         requestedAsset: manualRequest,
         authoritativeNextAsset: queuedNext,
+        localRotationAsset: localRotation,
         isMonitor: true
       })
-    ).toBe(serverCurrent);
+    ).toEqual({
+      asset: serverCurrent,
+      source: "authoritative-current"
+    });
     expect(
       getShowPlaybackCandidate({
         authoritativeCurrentAsset: null,
         requestedAsset: manualRequest,
         authoritativeNextAsset: queuedNext,
+        localRotationAsset: localRotation,
         isMonitor: false
       })
-    ).toBe(manualRequest);
+    ).toEqual({
+      asset: manualRequest,
+      source: "manual-request"
+    });
     expect(
       getShowPlaybackCandidate({
         authoritativeCurrentAsset: null,
         requestedAsset: null,
         authoritativeNextAsset: queuedNext,
+        localRotationAsset: localRotation,
         isMonitor: false
       })
-    ).toBe(queuedNext);
+    ).toEqual({
+      asset: queuedNext,
+      source: "authoritative-next"
+    });
+  });
+
+  it("lets a read-only monitor rotate locally while ignoring uncommitted controls", () => {
+    const localRotation = { id: "asset-archived-local" };
+
     expect(
       getShowPlaybackCandidate({
         authoritativeCurrentAsset: null,
-        requestedAsset: manualRequest,
-        authoritativeNextAsset: queuedNext,
+        requestedAsset: { id: "asset-manual" },
+        authoritativeNextAsset: { id: "asset-ready-next" },
+        localRotationAsset: localRotation,
         isMonitor: true
       })
+    ).toEqual({
+      asset: localRotation,
+      source: "local-rotation"
+    });
+  });
+
+  it("holds every prepared candidate until a committed asset becomes server-current", () => {
+    const localRotation = { id: "asset-local-next" };
+
+    expect(
+      shouldHoldPlaybackForAuthoritativeCommit({
+        awaitingAssetId: "asset-committed",
+        baselineCurrentAssetId: "asset-old-current",
+        currentAssetId: "asset-old-current",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(true);
+    expect(
+      shouldHoldPlaybackForAuthoritativeCommit({
+        awaitingAssetId: "asset-committed",
+        baselineCurrentAssetId: "asset-old-current",
+        currentAssetId: "asset-committed",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(false);
+    expect(
+      shouldHoldPlaybackForAuthoritativeCommit({
+        awaitingAssetId: "asset-committed",
+        baselineCurrentAssetId: "asset-old-current",
+        currentAssetId: "asset-old-current",
+        playbackMutationsEnabled: false
+      })
+    ).toBe(false);
+    expect(
+      shouldHoldPlaybackForAuthoritativeCommit({
+        awaitingAssetId: "asset-committed",
+        baselineCurrentAssetId: "asset-old-current",
+        currentAssetId: "asset-unrelated-authoritative-change",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(false);
+    expect(
+      shouldHoldPlaybackForAuthoritativeCommit({
+        awaitingAssetId: "asset-committed-from-empty-playback",
+        baselineCurrentAssetId: null,
+        currentAssetId: undefined,
+        playbackMutationsEnabled: true
+      })
+    ).toBe(true);
+
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: { id: "asset-stale-server-current" },
+        requestedAsset: { id: "asset-new-manual" },
+        authoritativeNextAsset: { id: "asset-new-ready" },
+        localRotationAsset: localRotation,
+        isMonitor: false,
+        holdForAuthoritativeCommit: true
+      })
     ).toBeNull();
+
+    // Monitor mode never creates an authoritative commit hold, so its local
+    // playlist remains independent and read-only.
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: null,
+        requestedAsset: null,
+        authoritativeNextAsset: null,
+        localRotationAsset: localRotation,
+        isMonitor: true,
+        holdForAuthoritativeCommit: false
+      })
+    ).toEqual({
+      asset: localRotation,
+      source: "local-rotation"
+    });
+  });
+
+  it("acknowledges a manual take of the active clip so it cannot replay later", () => {
+    const requestId = "manual-take-1";
+
+    expect(
+      decideManualTakeRequest({
+        requestId,
+        handledRequestId: null,
+        selectedAssetId: "asset-active",
+        activeAssetId: "asset-active"
+      })
+    ).toBe("acknowledge-active");
+    expect(
+      decideManualTakeRequest({
+        requestId,
+        handledRequestId: requestId,
+        selectedAssetId: "asset-active",
+        activeAssetId: "asset-rotated-later"
+      })
+    ).toBe("ignore");
+  });
+
+  it("commits only explicit manual and authoritative-next handoffs", () => {
+    expect(
+      shouldCommitShowPlaybackTransition({
+        source: "local-rotation",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(false);
+    expect(
+      shouldCommitShowPlaybackTransition({
+        source: "authoritative-current",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(false);
+    expect(
+      shouldCommitShowPlaybackTransition({
+        source: "manual-request",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(true);
+    expect(
+      shouldCommitShowPlaybackTransition({
+        source: "authoritative-next",
+        playbackMutationsEnabled: true
+      })
+    ).toBe(true);
+    expect(
+      shouldCommitShowPlaybackTransition({
+        source: "authoritative-next",
+        playbackMutationsEnabled: false
+      })
+    ).toBe(false);
   });
 
   it.each([
@@ -649,6 +910,18 @@ describe("remix transition cues", () => {
         audioSyncConnected: true,
         candidateAssetId: "remix-2",
         authorizedAssetId: "remix-2"
+      })
+    ).toBe(true);
+  });
+
+  it("does not make local display rotation wait for an authoritative audio cue", () => {
+    expect(
+      shouldHandoffPreparedPlaybackAtBoundary({
+        isMonitor: false,
+        localRotation: true,
+        audioSyncConnected: true,
+        candidateAssetId: "archived-local",
+        authorizedAssetId: null
       })
     ).toBe(true);
   });

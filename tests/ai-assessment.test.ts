@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { assessSubmission, heuristicAssessment } from "@/lib/ai-assessment";
+import {
+  assessSubmission,
+  heuristicAssessment,
+  submissionAssessmentInstructions
+} from "@/lib/ai-assessment";
+
+describe("submission assessment camera guidance", () => {
+  it("preserves explicit camera direction without imposing a default camera path", () => {
+    expect(submissionAssessmentInstructions).toContain(
+      "Honor explicit camera direction in the session motion rules or crowd request."
+    );
+    expect(submissionAssessmentInstructions).toContain(
+      "leave it open for movement that serves the requested transformation"
+    );
+    expect(submissionAssessmentInstructions).not.toContain(
+      "rather than the source video's exact composition"
+    );
+  });
+});
 
 describe("heuristicAssessment", () => {
   const session = {
@@ -50,6 +68,49 @@ describe("heuristicAssessment", () => {
     expect(result.winningPrompt).toContain("Motifs are open-ended");
     expect(result.winningPrompt).not.toContain("Preferred motifs:");
   });
+
+  it("leaves provider camera and loop requirements to final queue composition", () => {
+    const result = heuristicAssessment({
+      submissionText: "Turn every chrome arch into a tunnel of ember prisms",
+      session: {
+        ...session,
+        motionRules: "Fast clockwise orbit, then a snap zoom on each phrase change"
+      },
+      recentWinningPrompts: []
+    });
+
+    expect(result.winningPrompt).toContain(
+      "Turn every chrome arch into a tunnel of ember prisms"
+    );
+    expect(result.winningPrompt).not.toContain("Follow the artist's motion and camera rules");
+    expect(result.winningPrompt).not.toContain("End where the opening can resume");
+    expect(result.winningPrompt).not.toContain(
+      "Do not preserve the source video's exact composition or camera path"
+    );
+  });
+
+  it("keeps the heuristic creative body inside the assessment budget", () => {
+    const motionRules =
+      "Locked-off static camera with no pan, tilt, zoom, dolly, orbit, shake, reframing, or perspective drift";
+    const result = heuristicAssessment({
+      submissionText:
+        "Turn the central mirror into a blooming cobalt portal while ember fragments fold into its rim",
+      session: {
+        ...session,
+        creativeBible: "Reflective dream architecture and volumetric prismatic haze. ".repeat(18),
+        allowedMotifs: "mirrors, portals, prisms, halos, lattices, chrome fog, ".repeat(8),
+        colorPalette: "cobalt, ember, ultraviolet, warm silver, dusk blue, ".repeat(5),
+        motionRules
+      },
+      recentWinningPrompts: []
+    });
+
+    expect(result.winningPrompt).toContain(
+      "Turn the central mirror into a blooming cobalt portal"
+    );
+    expect(result.winningPrompt).not.toContain(motionRules);
+    expect(result.winningPrompt.length).toBeLessThanOrEqual(900);
+  });
 });
 
 describe("assessSubmission in Raw Prompt Mode", () => {
@@ -66,7 +127,7 @@ describe("assessSubmission in Raw Prompt Mode", () => {
     artistControlEnabled: false
   };
 
-  it("returns a safe crowd prompt exactly as written without artist-direction rewriting", async () => {
+  it("preserves safe crowd wording without an intake rewrite", async () => {
     const prompt = "Replace everything with hand-painted paper planets and snap zooms";
     const result = await assessSubmission({
       submissionText: prompt,
@@ -77,7 +138,8 @@ describe("assessSubmission in Raw Prompt Mode", () => {
     expect(result.decision).toBe("approved");
     expect(result.winningPrompt).toBe(prompt);
     expect(result.winningPrompt).not.toContain(session.artistName);
-    expect(result.approvalReason).toContain("exactly as written");
+    expect(result.approvalReason).toContain("original audience wording preserved");
+    expect(result.explanation).toContain("source-video-aware director");
   });
 
   it("ignores the artist banned-term list when artist control is off", async () => {

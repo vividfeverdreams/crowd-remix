@@ -89,7 +89,7 @@ You can override those values with `SEED_DJ_EMAIL` and `SEED_DJ_PASSWORD`.
 
 - `RUNWAYML_API_SECRET`
 
-The model is selected per session on the creation page. `GEMINI_API_KEY` and `GEMINI_VIDEO_MODEL` remain available only as a legacy Gemini Omni fallback; Seedance and Hailuo require Runway. The app reads OpenAI, Runway, and Google credentials from server-side environment variables only. The dashboard does not store or edit API keys.
+The video-generation model is selected per session on the creation page. `GEMINI_API_KEY` also powers source-video-aware prompt direction, with `GEMINI_PROMPT_MODEL` defaulting to `gemini-3.6-flash`; `GEMINI_VIDEO_MODEL` remains the legacy Gemini Omni generation fallback. Seedance and Hailuo generation require Runway. The app reads OpenAI, Runway, and Google credentials from server-side environment variables only. The dashboard does not store or edit API keys.
 
 The AI-assisted session setup uses this same OpenAI text-model configuration. If draft generation is unavailable, the setup screen still lets the DJ enter every field manually.
 

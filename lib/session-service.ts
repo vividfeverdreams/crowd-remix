@@ -595,11 +595,7 @@ export async function queueFallbackRemix(sessionId: string, userId: string) {
     return null;
   }
 
-  const prompt = [
-    session.basePrompt,
-    "Shift the loop toward a calmer geometric pulse with resilient club-safe motion and a subtle palette reset.",
-    "Keep the existing composition coherent and venue-safe."
-  ].join(" ");
+  const prompt = buildFallbackRemixPrompt(session);
 
   await queueAutomatedRender(session.id, null, session.status === "live" ? "remix" : "seed", prompt);
 
@@ -611,6 +607,16 @@ export async function queueFallbackRemix(sessionId: string, userId: string) {
   });
 
   return true;
+}
+
+export function buildFallbackRemixPrompt(session: {
+  basePrompt: string;
+}) {
+  return [
+    "Shift the loop toward a fresh geometric pulse with a subtle palette reset.",
+    session.basePrompt,
+    "Keep the transformation visually coherent."
+  ].join(" ");
 }
 
 async function requireOwnedSession(sessionId: string, userId: string) {
