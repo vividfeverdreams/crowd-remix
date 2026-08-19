@@ -13,25 +13,25 @@ export const readyPlaybackStallMs = 15_000;
 export function shouldRecoverReadyPlaybackAsset({
   readyAssetId,
   nextAssetId,
-  lastTransitionAt,
+  readyAssetUpdatedAt,
   now = Date.now()
 }: {
   readyAssetId: string;
   nextAssetId: string | null | undefined;
-  lastTransitionAt: Date | string | null | undefined;
+  readyAssetUpdatedAt: Date | string | null | undefined;
   now?: number;
 }) {
   if (readyAssetId !== nextAssetId) {
     return true;
   }
 
-  const lastTransitionTime = lastTransitionAt
-    ? new Date(lastTransitionAt).getTime()
+  const readyAssetUpdatedTime = readyAssetUpdatedAt
+    ? new Date(readyAssetUpdatedAt).getTime()
     : Number.NaN;
 
   return (
-    !Number.isFinite(lastTransitionTime) ||
-    now - lastTransitionTime >= readyPlaybackStallMs
+    !Number.isFinite(readyAssetUpdatedTime) ||
+    now - readyAssetUpdatedTime >= readyPlaybackStallMs
   );
 }
 

@@ -22,6 +22,7 @@ import {
   getTypewriterChunkSize
 } from "@/lib/remix-transition";
 import { getAccountRemixPath } from "@/lib/remix-links";
+import { readShowPlaybackModeMessage } from "@/lib/show-playback-mode";
 import { shouldShowNextRemixProgressOverlay } from "@/lib/show-overlay-state";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useAudioReactiveVisualEffect } from "@/lib/use-audio-reactive-visual-effect";
@@ -89,13 +90,21 @@ export function shouldAdvanceShowPlaybackAtVideoEnd(input: {
   );
 }
 
+export function getVideoSlotPresentation(isActive: boolean) {
+  return {
+    visibility: isActive ? ("visible" as const) : ("hidden" as const),
+    zIndex: isActive ? 2 : 1
+  };
+}
+
 export function ShowScreen({
   initialSnapshot,
   isMonitor = false
 }: ShowScreenProps) {
   const snapshot = useSessionSnapshot(initialSnapshot);
   const audioSync = useShowAudioSync(initialSnapshot.session.id);
-  const playbackMutationsEnabled = canMutateShowPlayback(isMonitor);
+  const [monitorMode, setMonitorMode] = useState(isMonitor);
+  const playbackMutationsEnabled = canMutateShowPlayback(monitorMode);
   const initialPlaybackAsset = initialSnapshot.session.playbackState?.currentAsset ?? null;
   const initialVideoSlot = createVideoSlot(initialPlaybackAsset);
   const introducedAssetIdsRef = useRef<Set<string> | null>(null);
@@ -186,7 +195,7 @@ export function ShowScreen({
       : null;
   const candidateAsset =
     authoritativeCurrentAsset ??
-    (isMonitor
+    (monitorMode
       ? null
       : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset);
   const cueSyncedPlaybackActive = isCueSyncedPlaybackActive({
@@ -196,6 +205,33 @@ export function ShowScreen({
   useEffect(() => {
     setSubmissionUrl(new URL(getAccountRemixPath(session.userId), window.location.origin).toString());
   }, [session.userId]);
+
+  useEffect(() => {
+    if (!isMonitor) {
+      return;
+    }
+
+    const handlePlaybackModeMessage = (event: MessageEvent<unknown>) => {
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== window.parent
+      ) {
+        return;
+      }
+
+      const nextMonitorMode = readShowPlaybackModeMessage(event.data);
+
+      if (nextMonitorMode !== null) {
+        setMonitorMode(nextMonitorMode);
+      }
+    };
+
+    window.addEventListener("message", handlePlaybackModeMessage);
+
+    return () => {
+      window.removeEventListener("message", handlePlaybackModeMessage);
+    };
+  }, [isMonitor]);
 
   useEffect(() => {
     if (
@@ -579,7 +615,7 @@ export function ShowScreen({
         transition &&
         promptRevealRef.current?.assetId === transition.assetId;
       const boundaryAuthorized = shouldHandoffPreparedPlaybackAtBoundary({
-        isMonitor,
+        isMonitor: monitorMode,
         audioSyncConnected: cueSyncedPlaybackActive,
         candidateAssetId: transition?.assetId ?? null,
         authorizedAssetId:
@@ -629,7 +665,7 @@ export function ShowScreen({
           current === transition.assetId ? null : current
         );
 
-        // Let React commit the opacity/z-index swap and let Chromium paint one
+        // Let React commit the visibility/z-index swap and let Chromium paint one
         // visible frame before play(). Calling play while the slot is hidden
         // can start the wrong composited layer and leave the visible one still.
         cancelPromotedPlaybackRef.current = scheduleAfterVisiblePaint(() => {
@@ -681,7 +717,7 @@ export function ShowScreen({
       commitPlaybackTransition,
       cueSyncedPlaybackActive,
       getVideoElement,
-      isMonitor,
+      monitorMode,
       playbackMutationsEnabled
     ]
   );
@@ -731,12 +767,8 @@ export function ShowScreen({
               <video
                 ref={videoSlot === 0 ? firstVideoSlotRef : secondVideoSlotRef}
                 data-asset-id={slot.assetId}
-                className="absolute inset-0 h-full w-full bg-black object-cover transition-opacity duration-100 ease-linear [backface-visibility:hidden] [transform:translateZ(0)]"
-                style={{
-                  opacity: isActive ? 1 : 0,
-                  zIndex: isActive ? 2 : 1,
-                  willChange: "opacity"
-                }}
+                className="absolute inset-0 h-full w-full bg-black object-cover"
+                style={getVideoSlotPresentation(isActive)}
                 src={slot.url}
                 muted
                 playsInline

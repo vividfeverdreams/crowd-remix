@@ -1246,9 +1246,10 @@ describe("Gemini Omni video requests", () => {
       completeGeminiVideoRender("v1_webhook-edit", outputUri)
     ).resolves.toBe("completed");
 
-    expect(testDoubles.takePlaybackAsset).toHaveBeenCalledWith(
+    expect(testDoubles.takePlaybackAsset).not.toHaveBeenCalled();
+    expect(testDoubles.promoteOldestReadyAsset).toHaveBeenCalledWith(
       "session-1",
-      "asset-1"
+      testDoubles.transaction
     );
 
     expect(testDoubles.db.renderJob.updateMany).toHaveBeenCalledWith({

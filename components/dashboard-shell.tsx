@@ -9,6 +9,7 @@ import type { OpenAiConnectionStatus } from "@/lib/openai-key-store";
 import type { GoogleConnectionStatus } from "@/lib/google-key-store";
 import { getAccountRemixPath } from "@/lib/remix-links";
 import { normalizeVideoProgress } from "@/lib/render-progress";
+import { createShowPlaybackModeMessage } from "@/lib/show-playback-mode";
 import type { SessionSnapshot } from "@/lib/snapshot";
 import { useSessionSnapshot } from "@/lib/use-session-snapshot";
 import { formatRelativeTime } from "@/lib/utils";
@@ -99,9 +100,20 @@ export function shouldReconcileSession({
 
 export function getDashboardShowFrameSource(
   showLink: string,
-  fullscreenActive: boolean
+  _fullscreenActive: boolean
 ) {
-  return fullscreenActive ? showLink : `${showLink}?monitor=1`;
+  return `${showLink}?monitor=1`;
+}
+
+export function syncDashboardShowPlaybackMode(
+  frameWindow: Pick<Window, "postMessage"> | null | undefined,
+  fullscreenActive: boolean,
+  targetOrigin: string
+) {
+  frameWindow?.postMessage(
+    createShowPlaybackModeMessage(!fullscreenActive),
+    targetOrigin
+  );
 }
 
 export function isDashboardShowFullscreen(
@@ -150,6 +162,7 @@ export function DashboardShell({
   >(null);
   const generationMenuRef = useRef<HTMLDetailsElement>(null);
   const fullscreenShowSurfaceRef = useRef<HTMLDivElement>(null);
+  const liveMonitorRef = useRef<HTMLIFrameElement>(null);
   const reconciliationInFlightRef = useRef(false);
   const submittedWordmarkOpacityRef = useRef(initialSnapshot.session.wordmarkOpacity);
   const submittedWordmarkSizeRef = useRef(initialSnapshot.session.wordmarkSize);
@@ -297,6 +310,14 @@ export function DashboardShell({
       document.removeEventListener("fullscreenchange", syncFullscreenShowState);
     };
   }, []);
+
+  useEffect(() => {
+    syncDashboardShowPlaybackMode(
+      liveMonitorRef.current?.contentWindow,
+      fullscreenShowActive,
+      window.location.origin
+    );
+  }, [fullscreenShowActive]);
 
   useEffect(() => {
     if (pendingQrOverlayVisibility === session.qrOverlayVisible) {
@@ -769,11 +790,19 @@ export function DashboardShell({
               className="aspect-video bg-black"
             >
               <iframe
+                ref={liveMonitorRef}
                 src={getDashboardShowFrameSource(showLink, fullscreenShowActive)}
                 title="Live show monitor"
                 className="h-full w-full border-0"
                 allow="autoplay; fullscreen"
                 allowFullScreen
+                onLoad={() =>
+                  syncDashboardShowPlaybackMode(
+                    liveMonitorRef.current?.contentWindow,
+                    fullscreenShowActive,
+                    window.location.origin
+                  )
+                }
               />
             </div>
           </div>

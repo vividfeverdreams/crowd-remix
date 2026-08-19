@@ -1,12 +1,28 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { requestVideoPlayback, ShowScreen } from "@/components/show-screen";
+import {
+  getVideoSlotPresentation,
+  requestVideoPlayback,
+  ShowScreen
+} from "@/components/show-screen";
 import type { SessionSnapshot } from "@/lib/snapshot";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 describe("show screen video presentation", () => {
+  it("switches video layers without a compositor opacity transition", () => {
+    expect(getVideoSlotPresentation(true)).toEqual({
+      visibility: "visible",
+      zIndex: 2
+    });
+    expect(getVideoSlotPresentation(false)).toEqual({
+      visibility: "hidden",
+      zIndex: 1
+    });
+    expect(getVideoSlotPresentation(true)).not.toHaveProperty("opacity");
+  });
+
   it("recognizes playback starting even if the play promise remains pending", async () => {
     const neverSettles = new Promise<void>(() => undefined);
     class DeferredPlaybackVideo extends EventTarget {
@@ -86,8 +102,12 @@ describe("show screen video presentation", () => {
 
     expect(markup).toContain('data-asset-id="asset-current"');
     expect(markup).toContain('src="/current-loop.mp4"');
+    expect(markup).toContain("visibility:visible");
     expect(markup).not.toContain('autoplay=""');
     expect(markup).not.toContain(' loop=""');
+    const videoMarkup = markup.match(/<video[^>]*><\/video>/)?.[0] ?? "";
+    expect(videoMarkup).not.toContain("transition-opacity");
+    expect(videoMarkup).not.toContain("translateZ(0)");
     expect(markup).toContain("Nova");
     expect(markup).toContain("Chrome clouds melt over the dance floor");
     expect(markup).toContain('data-attribution-asset-id="asset-current"');

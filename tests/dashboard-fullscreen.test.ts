@@ -4,9 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getDashboardShowFrameSource,
   isDashboardShowFullscreen,
-  requestDashboardShowFullscreen
+  requestDashboardShowFullscreen,
+  syncDashboardShowPlaybackMode
 } from "@/components/dashboard-shell";
 import { ShowScreen } from "@/components/show-screen";
+import {
+  createShowPlaybackModeMessage,
+  readShowPlaybackModeMessage,
+  showPlaybackModeMessageType
+} from "@/lib/show-playback-mode";
 import type { SessionSnapshot } from "@/lib/snapshot";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -68,13 +74,71 @@ describe("dashboard fullscreen show", () => {
     }
   );
 
-  it("keeps the inline monitor read-only and enables playback control in fullscreen", () => {
-    expect(getDashboardShowFrameSource("/show/session-1", false)).toBe(
-      "/show/session-1?monitor=1"
+  it("keeps the show iframe mounted at one stable source across fullscreen changes", () => {
+    const inlineSource = getDashboardShowFrameSource(
+      "/show/session-1",
+      false
     );
-    expect(getDashboardShowFrameSource("/show/session-1", true)).toBe(
-      "/show/session-1"
+    const fullscreenSource = getDashboardShowFrameSource(
+      "/show/session-1",
+      true
     );
+
+    expect(inlineSource).toBe("/show/session-1?monitor=1");
+    expect(fullscreenSource).toBe(inlineSource);
+  });
+
+  it("syncs read-only monitor mode inline and owner playback mode in fullscreen", () => {
+    const postMessage = vi.fn();
+    const frameWindow = { postMessage };
+    const targetOrigin = "https://dream-sequence.example";
+
+    syncDashboardShowPlaybackMode(frameWindow, false, targetOrigin);
+    syncDashboardShowPlaybackMode(frameWindow, true, targetOrigin);
+
+    expect(postMessage).toHaveBeenNthCalledWith(
+      1,
+      createShowPlaybackModeMessage(true),
+      targetOrigin
+    );
+    expect(postMessage).toHaveBeenNthCalledWith(
+      2,
+      createShowPlaybackModeMessage(false),
+      targetOrigin
+    );
+  });
+
+  it("does not throw when the stable show iframe is not loaded yet", () => {
+    expect(() =>
+      syncDashboardShowPlaybackMode(null, true, "https://dream-sequence.example")
+    ).not.toThrow();
+  });
+
+  it.each([true, false])(
+    "round-trips monitor=%s through the show playback mode message",
+    (monitor) => {
+      const message = createShowPlaybackModeMessage(monitor);
+
+      expect(message).toEqual({
+        type: showPlaybackModeMessageType,
+        monitor
+      });
+      expect(readShowPlaybackModeMessage(message)).toBe(monitor);
+    }
+  );
+
+  it.each([
+    null,
+    undefined,
+    false,
+    "dream-sequence:show-playback-mode",
+    [],
+    {},
+    { type: "other-message", monitor: true },
+    { type: showPlaybackModeMessageType },
+    { type: showPlaybackModeMessageType, monitor: "false" }
+  ])("rejects malformed show playback mode message %#", (message) => {
+    expect(readShowPlaybackModeMessage(message)).toBeNull();
   });
 
   it("recognizes only the dashboard show surface as fullscreen", () => {

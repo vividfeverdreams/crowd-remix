@@ -102,6 +102,49 @@ import {
   queueAutomatedRender,
   reconcilePendingRenderJobs
 } from "@/lib/submission-pipeline";
+import {
+  readyPlaybackStallMs,
+  shouldRecoverReadyPlaybackAsset
+} from "@/lib/playback-transition";
+
+describe("ready playback recovery", () => {
+  it("preserves a freshly staged next asset for the show introduction", () => {
+    const now = Date.parse("2026-08-18T20:00:00.000Z");
+
+    expect(
+      shouldRecoverReadyPlaybackAsset({
+        readyAssetId: "asset-next",
+        nextAssetId: "asset-next",
+        readyAssetUpdatedAt: new Date(now - readyPlaybackStallMs + 1),
+        now
+      })
+    ).toBe(false);
+  });
+
+  it("recovers a staged asset only after the show has had time to introduce it", () => {
+    const now = Date.parse("2026-08-18T20:00:00.000Z");
+
+    expect(
+      shouldRecoverReadyPlaybackAsset({
+        readyAssetId: "asset-next",
+        nextAssetId: "asset-next",
+        readyAssetUpdatedAt: new Date(now - readyPlaybackStallMs),
+        now
+      })
+    ).toBe(true);
+  });
+
+  it("immediately recovers an orphan ready asset", () => {
+    expect(
+      shouldRecoverReadyPlaybackAsset({
+        readyAssetId: "asset-orphan",
+        nextAssetId: null,
+        readyAssetUpdatedAt: new Date(),
+        now: Date.now()
+      })
+    ).toBe(true);
+  });
+});
 
 describe("submission render queue", () => {
   beforeEach(() => {
@@ -815,13 +858,14 @@ describe("submission render queue", () => {
       playbackState: {
         currentAssetId: "asset-manual",
         nextAssetId: "asset-ready-backlog",
-        lastTransitionAt: new Date(),
+        lastTransitionAt: new Date(0),
         emergencyPaused: false
       },
       renderJobs: [],
       visualAssets: [
         {
-          id: "asset-ready-backlog"
+          id: "asset-ready-backlog",
+          updatedAt: new Date()
         }
       ],
       submissions: [

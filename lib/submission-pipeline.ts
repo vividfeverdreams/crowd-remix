@@ -308,7 +308,8 @@ export async function attemptAutomatedSelection(sessionId: string) {
           }
         },
         select: {
-          id: true
+          id: true,
+          updatedAt: true
         },
         orderBy: {
           createdAt: "asc"
@@ -349,7 +350,7 @@ export async function attemptAutomatedSelection(sessionId: string) {
       !shouldRecoverReadyPlaybackAsset({
         readyAssetId: readyAsset.id,
         nextAssetId: session.playbackState.nextAssetId,
-        lastTransitionAt: session.playbackState.lastTransitionAt
+        readyAssetUpdatedAt: readyAsset.updatedAt
       })
     ) {
       return null;
