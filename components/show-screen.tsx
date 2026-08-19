@@ -4,13 +4,13 @@ import Image from "next/image";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import {
+  acknowledgeAuthoritativePlaybackAsset,
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
   getAuthoritativePlaybackCandidate,
-  getChronologicalPlaybackRotation,
   getIntroducedPlaybackAssetIds,
-  getNextPlaybackRotationAsset,
   getPlaybackAttribution,
+  getShowPlaybackCandidate,
   isCueSyncedPlaybackActive,
   getRenderableVideoSlots,
   getStandbyRetryDelayMs,
@@ -172,11 +172,6 @@ export function ShowScreen({
   const playableAssets = session.visualAssets.filter(
     (asset): asset is PlayableQueuedAsset => Boolean(asset?.id && asset.publicUrl)
   );
-  const playbackRotation = getChronologicalPlaybackRotation(playableAssets);
-  const predictedNextAsset = getNextPlaybackRotationAsset(
-    playbackRotation,
-    activeAssetId
-  );
   const requestedAsset =
     requestedAssetId && requestedAssetId !== activeAssetId
       ? playableAssets.find((asset) => asset.id === requestedAssetId) ?? null
@@ -193,11 +188,12 @@ export function ShowScreen({
     nextAsset.id !== activeAssetId
       ? nextAsset
       : null;
-  const candidateAsset =
-    authoritativeCurrentAsset ??
-    (monitorMode
-      ? null
-      : requestedAsset ?? authoritativeNextAsset ?? predictedNextAsset);
+  const candidateAsset = getShowPlaybackCandidate({
+    authoritativeCurrentAsset,
+    requestedAsset,
+    authoritativeNextAsset,
+    isMonitor: monitorMode
+  });
   const cueSyncedPlaybackActive = isCueSyncedPlaybackActive({
     audioSyncConnected: audioSync.connected,
     autoTakeOnCue: audioSync.autoTakeOnCue
@@ -303,6 +299,30 @@ export function ShowScreen({
       promptExitTimerRef.current = null;
     }, 250);
   }, []);
+
+  useEffect(() => {
+    const introducedAssetIds = introducedAssetIdsRef.current;
+
+    if (
+      !introducedAssetIds ||
+      !acknowledgeAuthoritativePlaybackAsset(
+        currentAsset?.id,
+        promptRevealRef.current?.assetId,
+        introducedAssetIds
+      )
+    ) {
+      return;
+    }
+
+    if (promptExitTimerRef.current !== null) {
+      window.clearTimeout(promptExitTimerRef.current);
+      promptExitTimerRef.current = null;
+    }
+
+    promptRevealRef.current = null;
+    setPromptReveal(null);
+    setPromptExiting(false);
+  }, [currentAsset?.id]);
 
   useEffect(() => {
     const cue = audioSync.lastCue;

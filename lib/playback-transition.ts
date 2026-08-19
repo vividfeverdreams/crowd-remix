@@ -89,7 +89,6 @@ async function transitionPlaybackAsset(
 
     if (
       requireQueuedAsset &&
-      playback.nextAssetId !== null &&
       playback.nextAssetId !== assetId
     ) {
       return null;
@@ -165,7 +164,9 @@ async function transitionPlaybackAsset(
       });
     }
 
-    const queuedAssetId = await promoteOldestReadyAsset(sessionId, tx);
+    const queuedAssetId = await promoteOldestReadyAsset(sessionId, tx, {
+      allowArchivedRotation: false
+    });
 
     return {
       changed: true,

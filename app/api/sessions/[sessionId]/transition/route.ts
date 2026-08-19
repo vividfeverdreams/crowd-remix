@@ -37,7 +37,9 @@ export async function POST(request: Request, { params }: TransitionRouteProps) {
 
   if (transitioned === true) {
     waitUntil(
-      attemptAutomatedSelection(sessionId).catch((error: unknown) => {
+      attemptAutomatedSelection(sessionId, {
+        allowArchivedRotation: false
+      }).catch((error: unknown) => {
         console.error("[playback-transition] automated selection failed", {
           sessionId,
           assetId,

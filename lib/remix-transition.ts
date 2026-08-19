@@ -95,6 +95,20 @@ export function getIntroducedPlaybackAssetIds(
   return introducedAssetIds;
 }
 
+export function acknowledgeAuthoritativePlaybackAsset(
+  currentAssetId: string | null | undefined,
+  pendingIntroductionAssetId: string | null | undefined,
+  introducedAssetIds: Set<string>
+) {
+  if (!currentAssetId) {
+    return false;
+  }
+
+  introducedAssetIds.add(currentAssetId);
+
+  return pendingIntroductionAssetId === currentAssetId;
+}
+
 export function shouldShowPlaybackIntroduction(
   asset: {
     id: string;
@@ -130,6 +144,23 @@ export function getAuthoritativePlaybackCandidate<
   return currentAsset?.id && currentAsset.id !== activeAssetId
     ? currentAsset
     : null;
+}
+
+export function getShowPlaybackCandidate<Asset>({
+  authoritativeCurrentAsset,
+  requestedAsset,
+  authoritativeNextAsset,
+  isMonitor
+}: {
+  authoritativeCurrentAsset: Asset | null;
+  requestedAsset: Asset | null;
+  authoritativeNextAsset: Asset | null;
+  isMonitor: boolean;
+}) {
+  return (
+    authoritativeCurrentAsset ??
+    (isMonitor ? null : requestedAsset ?? authoritativeNextAsset)
+  );
 }
 
 export function shouldStartAutomaticPlaybackTransition({

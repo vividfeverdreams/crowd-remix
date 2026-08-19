@@ -449,4 +449,22 @@ describe("five-video playback rotation", () => {
       }
     });
   });
+
+  it("leaves the current asset looping after a transition when archived rotation is disabled", async () => {
+    client.playbackState.findUnique.mockResolvedValue({
+      id: "playback-1",
+      currentAssetId: "asset-new-remix",
+      nextAssetId: null
+    });
+    client.visualAsset.findFirst.mockResolvedValue(null);
+
+    await expect(
+      promoteOldestReadyAsset("session-1", client, {
+        allowArchivedRotation: false
+      })
+    ).resolves.toBeNull();
+
+    expect(client.visualAsset.findMany).not.toHaveBeenCalled();
+    expect(client.playbackState.updateMany).not.toHaveBeenCalled();
+  });
 });

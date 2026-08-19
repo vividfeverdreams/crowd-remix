@@ -239,9 +239,16 @@ describe("playback transition target", () => {
         status: "live"
       }
     });
+    expect(mocks.promoteReadyAsset).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(Object),
+      {
+        allowArchivedRotation: false
+      }
+    );
   });
 
-  it("accepts a predicted rotation asset when the explicit next slot is empty", async () => {
+  it("rejects an unqueued predicted rotation asset", async () => {
     mocks.findPlayback.mockResolvedValue({
       id: "playback-1",
       currentAssetId: "asset-live",
@@ -250,21 +257,10 @@ describe("playback transition target", () => {
 
     await expect(
       completePlaybackTransition("session-1", "asset-remix")
-    ).resolves.toBe(true);
+    ).resolves.toBeNull();
 
-    expect(mocks.updatePlaybackMany).toHaveBeenCalledWith({
-      where: {
-        id: "playback-1",
-        currentAssetId: "asset-live",
-        nextAssetId: null
-      },
-      data: {
-        currentAssetId: "asset-remix",
-        nextAssetId: null,
-        status: "live",
-        lastTransitionAt: expect.any(Date)
-      }
-    });
+    expect(mocks.findAsset).not.toHaveBeenCalled();
+    expect(mocks.updatePlaybackMany).not.toHaveBeenCalled();
   });
 
   it("rejects a predicted rotation asset when another asset is explicitly queued", async () => {

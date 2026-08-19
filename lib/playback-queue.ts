@@ -3,6 +3,10 @@ import { getNextPlaybackRotationAsset } from "@/lib/remix-transition";
 
 export const playbackRotationSize = 5;
 
+type PromoteOldestReadyAssetOptions = {
+  allowArchivedRotation?: boolean;
+};
+
 type PlaybackQueueClient = {
   playbackState: {
     findUnique: (args: any) => Promise<{
@@ -32,7 +36,8 @@ type PlaybackQueueClient = {
 
 export async function promoteOldestReadyAsset(
   sessionId: string,
-  client: PlaybackQueueClient = db
+  client: PlaybackQueueClient = db,
+  options: PromoteOldestReadyAssetOptions = {}
 ) {
   const playback = await client.playbackState.findUnique({
     where: {
@@ -71,7 +76,11 @@ export async function promoteOldestReadyAsset(
   });
   let candidate = freshCandidate;
 
-  if (!candidate && playback.currentAssetId) {
+  if (
+    !candidate &&
+    options.allowArchivedRotation !== false &&
+    playback.currentAssetId
+  ) {
     const currentAsset = await client.visualAsset.findFirst({
       where: {
         id: playback.currentAssetId,

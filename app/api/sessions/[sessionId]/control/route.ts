@@ -66,7 +66,9 @@ export async function POST(request: Request, { params }: ControlRouteProps) {
       break;
     case "skip-next":
       await forceTransitionToNext(sessionId, user.id);
-      await attemptAutomatedSelection(sessionId);
+      await attemptAutomatedSelection(sessionId, {
+        allowArchivedRotation: false
+      });
       break;
     case "fallback-remix":
       await queueFallbackRemix(sessionId, user.id);
@@ -120,7 +122,9 @@ export async function POST(request: Request, { params }: ControlRouteProps) {
       }
 
       waitUntil(
-        attemptAutomatedSelection(sessionId).catch((error: unknown) => {
+        attemptAutomatedSelection(sessionId, {
+          allowArchivedRotation: false
+        }).catch((error: unknown) => {
           console.error("[manual-generation] automated selection failed", {
             sessionId,
             assetId: selectedAsset.id,

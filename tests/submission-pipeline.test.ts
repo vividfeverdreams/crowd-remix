@@ -850,6 +850,36 @@ describe("submission render queue", () => {
     expect(mocks.startVideoRender).not.toHaveBeenCalled();
   });
 
+  it("keeps post-transition selection from staging archived rotation", async () => {
+    mocks.findSession.mockResolvedValue({
+      id: "session-1",
+      userId: "user-1",
+      autoSelectEnabled: true,
+      playbackState: {
+        currentAssetId: "asset-current",
+        nextAssetId: null,
+        emergencyPaused: false
+      },
+      renderJobs: [],
+      visualAssets: [],
+      submissions: []
+    });
+
+    await expect(
+      attemptAutomatedSelection("session-1", {
+        allowArchivedRotation: false
+      })
+    ).resolves.toBeNull();
+
+    expect(mocks.promoteOldestReadyAsset).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(Object),
+      {
+        allowArchivedRotation: false
+      }
+    );
+  });
+
   it("does not immediately undo a fresh transition by taking its staged ready backlog", async () => {
     mocks.findSession.mockResolvedValue({
       id: "session-1",

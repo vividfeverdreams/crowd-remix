@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  acknowledgeAuthoritativePlaybackAsset,
   decideAutomaticCueTransition,
   getAudienceFacingRemixPrompt,
   getAuthoritativePlaybackCandidate,
@@ -8,6 +9,7 @@ import {
   getNextPlaybackRotationAsset,
   getPlaybackAttribution,
   getRenderableVideoSlots,
+  getShowPlaybackCandidate,
   getStandbyRetryDelayMs,
   getStandbyVideoSlot,
   isCueSyncedPlaybackActive,
@@ -238,6 +240,34 @@ describe("remix transition cues", () => {
     ]);
   });
 
+  it("acknowledges a server-current asset and dismisses its stale introduction", () => {
+    const introducedAssetIds = new Set(["asset-seed"]);
+
+    expect(
+      acknowledgeAuthoritativePlaybackAsset(
+        "asset-remix",
+        "asset-remix",
+        introducedAssetIds
+      )
+    ).toBe(true);
+    expect(introducedAssetIds).toEqual(
+      new Set(["asset-seed", "asset-remix"])
+    );
+  });
+
+  it("acknowledges authoritative playback without dismissing another pending introduction", () => {
+    const introducedAssetIds = new Set<string>();
+
+    expect(
+      acknowledgeAuthoritativePlaybackAsset(
+        "asset-current",
+        "asset-next",
+        introducedAssetIds
+      )
+    ).toBe(false);
+    expect(introducedAssetIds).toEqual(new Set(["asset-current"]));
+  });
+
   it("shows a newly authoritative asset introduction once and skips played rotation assets", () => {
     const introducedAssetIds = new Set(["asset-seen"]);
 
@@ -334,6 +364,56 @@ describe("remix transition cues", () => {
         null
       )
     ).toBe(authoritativeAsset);
+  });
+
+  it("keeps the current clip looping without an authoritative or manual candidate", () => {
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: null,
+        requestedAsset: null,
+        authoritativeNextAsset: null,
+        isMonitor: false
+      })
+    ).toBeNull();
+  });
+
+  it("prioritizes server-current and explicit playback candidates without an implicit rotation", () => {
+    const serverCurrent = { id: "asset-server-current" };
+    const manualRequest = { id: "asset-manual" };
+    const queuedNext = { id: "asset-ready-next" };
+
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: serverCurrent,
+        requestedAsset: manualRequest,
+        authoritativeNextAsset: queuedNext,
+        isMonitor: true
+      })
+    ).toBe(serverCurrent);
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: null,
+        requestedAsset: manualRequest,
+        authoritativeNextAsset: queuedNext,
+        isMonitor: false
+      })
+    ).toBe(manualRequest);
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: null,
+        requestedAsset: null,
+        authoritativeNextAsset: queuedNext,
+        isMonitor: false
+      })
+    ).toBe(queuedNext);
+    expect(
+      getShowPlaybackCandidate({
+        authoritativeCurrentAsset: null,
+        requestedAsset: manualRequest,
+        authoritativeNextAsset: queuedNext,
+        isMonitor: true
+      })
+    ).toBeNull();
   });
 
   it.each([

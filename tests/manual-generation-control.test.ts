@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   attemptAutomatedSelection: vi.fn(),
   completePlaybackTransition: vi.fn(),
   cueHistoricalGeneration: vi.fn(),
+  forceTransitionToNext: vi.fn(),
   publishAudioSyncMessage: vi.fn(),
   waitUntil: vi.fn()
 }));
@@ -21,7 +22,7 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/session-service", () => ({
   completePlaybackTransition: mocks.completePlaybackTransition,
   cueHistoricalGeneration: mocks.cueHistoricalGeneration,
-  forceTransitionToNext: vi.fn(),
+  forceTransitionToNext: mocks.forceTransitionToNext,
   queueFallbackRemix: vi.fn(),
   setSelectionPause: vi.fn(),
   setShowProgressOverlayVisibility: vi.fn(),
@@ -93,8 +94,40 @@ describe("manual generation control", () => {
     expect(
       mocks.completePlaybackTransition.mock.invocationCallOrder[0]
     ).toBeLessThan(mocks.publishAudioSyncMessage.mock.invocationCallOrder[0]);
-    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1");
+    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1", {
+      allowArchivedRotation: false
+    });
     expect(mocks.waitUntil).toHaveBeenCalledOnce();
+  });
+
+  it("keeps skip-next follow-up selection fresh-only", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/sessions/session-1/control", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          action: "skip-next"
+        })
+      }),
+      {
+        params: Promise.resolve({
+          sessionId: "session-1"
+        })
+      }
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ok: true
+    });
+    expect(mocks.forceTransitionToNext).toHaveBeenCalledWith(
+      "session-1",
+      "user-1"
+    );
+    expect(mocks.attemptAutomatedSelection).toHaveBeenCalledWith("session-1", {
+      allowArchivedRotation: false
+    });
   });
 
   it("reports a conflict instead of claiming an uncommitted selection succeeded", async () => {
