@@ -78,6 +78,8 @@ type VideoSlot = {
 
 type VideoSlots = [VideoSlot | null, VideoSlot | null];
 
+export const subtleVideoCrossfadeMilliseconds = 200;
+
 export function canMutateShowPlayback(isMonitor: boolean) {
   return !isMonitor;
 }
@@ -95,11 +97,24 @@ export function shouldAdvanceShowPlaybackAtVideoEnd(input: {
   });
 }
 
-export function getVideoSlotPresentation(isActive: boolean) {
+export function getVideoSlotPresentation(
+  isActive: boolean,
+  isRetiring = false
+) {
+  const isVisible = isActive || isRetiring;
+
   return {
-    visibility: isActive ? ("visible" as const) : ("hidden" as const),
+    visibility: isVisible ? ("visible" as const) : ("hidden" as const),
+    opacity: isVisible ? 1 : 0,
     zIndex: isActive ? 2 : 1
   };
+}
+
+export function getAvailableStandbyVideoSlot(
+  activeSlot: VideoSlotIndex,
+  retiringSlot: VideoSlotIndex | null
+) {
+  return retiringSlot === null ? getStandbyVideoSlot(activeSlot) : null;
 }
 
 export function ShowScreen({
@@ -126,6 +141,8 @@ export function ShowScreen({
     null
   ]);
   const [activeVideoSlot, setActiveVideoSlot] = useState<VideoSlotIndex>(0);
+  const [retiringVideoSlot, setRetiringVideoSlot] =
+    useState<VideoSlotIndex | null>(null);
   const [standbyTransition, setStandbyTransition] =
     useState<QueuedTransition | null>(null);
   const [standbyRetryRevision, setStandbyRetryRevision] = useState(0);
@@ -150,6 +167,7 @@ export function ShowScreen({
   const authorizedBoundaryAssetIdRef = useRef<string | null>(null);
   const promptRevealRef = useRef<QueuedTransition | null>(null);
   const promptExitTimerRef = useRef<number | null>(null);
+  const crossfadeTimerRef = useRef<number | null>(null);
   const standbyRetryTimerRef = useRef<number | null>(null);
   const standbyPreloadAttemptsRef = useRef(0);
   const transitionRequestAbortRef = useRef<AbortController | null>(null);
@@ -467,7 +485,15 @@ export function ShowScreen({
       return;
     }
 
-    const videoSlot = getStandbyVideoSlot(activeVideoSlotRef.current);
+    const videoSlot = getAvailableStandbyVideoSlot(
+      activeVideoSlotRef.current,
+      retiringVideoSlot
+    );
+
+    if (videoSlot === null) {
+      return;
+    }
+
     const existingTransition = standbyTransitionRef.current;
 
     if (
@@ -529,7 +555,8 @@ export function ShowScreen({
     candidateAsset?.sourceSubmission?.sender,
     candidateAsset?.sourceSubmission?.source,
     candidateAsset?.status,
-    playbackCandidate?.source
+    playbackCandidate?.source,
+    retiringVideoSlot
   ]);
 
   useEffect(() => {
@@ -804,7 +831,18 @@ export function ShowScreen({
 
         promotedPlaybackAssetIdRef.current = transition.assetId;
         cancelPromotedPlaybackRef.current?.();
+        if (crossfadeTimerRef.current !== null) {
+          window.clearTimeout(crossfadeTimerRef.current);
+        }
+
+        setRetiringVideoSlot(videoSlot);
         setActiveVideoSlot(transition.videoSlot);
+        crossfadeTimerRef.current = window.setTimeout(() => {
+          setRetiringVideoSlot((current) =>
+            current === videoSlot ? null : current
+          );
+          crossfadeTimerRef.current = null;
+        }, subtleVideoCrossfadeMilliseconds);
         setStandbyTransition(null);
         setPlaybackError(null);
         setRequestedAssetId((current) =>
@@ -885,6 +923,11 @@ export function ShowScreen({
         window.clearTimeout(standbyRetryTimerRef.current);
       }
 
+      if (crossfadeTimerRef.current !== null) {
+        window.clearTimeout(crossfadeTimerRef.current);
+        crossfadeTimerRef.current = null;
+      }
+
       cancelPromotedPlaybackRef.current?.();
       cancelPromotedPlaybackRef.current = null;
       promotedPlaybackAssetIdRef.current = null;
@@ -910,14 +953,15 @@ export function ShowScreen({
 
           const videoSlot = index as VideoSlotIndex;
           const isActive = activeVideoSlot === videoSlot;
+          const isRetiring = retiringVideoSlot === videoSlot;
 
           return (
             <Fragment key={`persistent-video-slot-${videoSlot}`}>
               <video
                 ref={videoSlot === 0 ? firstVideoSlotRef : secondVideoSlotRef}
                 data-asset-id={slot.assetId}
-                className="absolute inset-0 h-full w-full bg-black object-cover"
-                style={getVideoSlotPresentation(isActive)}
+                className="absolute inset-0 h-full w-full bg-black object-cover transition-opacity duration-200 ease-linear motion-reduce:transition-none"
+                style={getVideoSlotPresentation(isActive, isRetiring)}
                 src={slot.url}
                 muted
                 playsInline

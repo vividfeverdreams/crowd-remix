@@ -92,6 +92,10 @@ import {
   startVideoRender,
   videoModerationBlockedReason
 } from "@/lib/rendering";
+import {
+  providerCrowdReferenceRequirement,
+  providerOpeningFrameContinuityRequirement
+} from "@/lib/video-prompt-budget";
 
 describe("Gemini Omni video requests", () => {
   afterEach(() => {
@@ -322,7 +326,9 @@ describe("Gemini Omni video requests", () => {
 
     testDoubles.persistVideoAsset.mockResolvedValue({
       publicUrl: "https://cdn.example.com/persisted-runway.mp4",
-      storagePath: "renders/asset-runway-success.mp4"
+      storagePath: "renders/asset-runway-success.mp4",
+      thumbnailUrl:
+        "https://cdn.example.com/closing-frames/asset-runway-success.jpg"
     });
     testDoubles.transaction.playbackState.updateMany.mockResolvedValue({
       count: 1
@@ -410,6 +416,8 @@ describe("Gemini Omni video requests", () => {
         status: "ready",
         publicUrl: "https://cdn.example.com/persisted-runway.mp4",
         storagePath: "renders/asset-runway-success.mp4",
+        thumbnailUrl:
+          "https://cdn.example.com/closing-frames/asset-runway-success.jpg",
         sourceVideoId: taskId
       }
     });
@@ -774,6 +782,79 @@ describe("Gemini Omni video requests", () => {
       }
     ]);
     expect(payload.input[1].text).toContain("<IMAGE_REF_0>");
+  });
+
+  it("attaches the closing frame first and starts Omni's prompt with the frame-0 rule", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1]), {
+          status: 200,
+          headers: {
+            "Content-Type": "image/jpeg"
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([2]), {
+          status: 200,
+          headers: {
+            "Content-Type": "image/png"
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "v1_continuity-edit",
+            status: "queued"
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startVideoRender({
+      mode: "remix",
+      prompt: "Evolve the room into an ultraviolet cathedral.",
+      sourceVideoId: "v1_source-interaction",
+      sourceVideoUrl: "https://example.com/source.mp4",
+      openingFrameImageUrl: "https://example.com/closing-frame.jpg",
+      remixReferenceImageUrl: "https://example.com/crowd-photo.png",
+      geminiApiKey: "test-gemini-key"
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://example.com/closing-frame.jpg"
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://example.com/crowd-photo.png"
+    );
+
+    const request = fetchMock.mock.calls[2]?.[1] as RequestInit;
+    const payload = JSON.parse(String(request.body));
+
+    expect(payload.input.slice(0, 2)).toEqual([
+      {
+        type: "image",
+        data: "AQ==",
+        mime_type: "image/jpeg"
+      },
+      {
+        type: "image",
+        data: "Ag==",
+        mime_type: "image/png"
+      }
+    ]);
+    expect(payload.input[2].text.startsWith(providerOpeningFrameContinuityRequirement)).toBe(
+      true
+    );
+    expect(payload.input[2].text).toContain(providerCrowdReferenceRequirement);
   });
 
   it("uploads the current public MP4 when the source predates Gemini", async () => {

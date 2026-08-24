@@ -149,4 +149,75 @@ describe("public remix prompt catalog", () => {
     expect(next).not.toBeNull();
     expect(next?.id).not.toBe(current.id);
   });
+
+  it("prevents either prompt type from starving during repeated shuffles", () => {
+    const initial = publicRemixPromptTemplates.find(
+      (template) => template.id === "image-environment"
+    );
+
+    if (!initial) {
+      throw new Error("Expected the initial image template.");
+    }
+
+    const selectedTemplates = [initial];
+    let recentTemplateIds = [initial.id];
+    let currentTemplateId = initial.id;
+
+    for (let index = 0; index < 20; index += 1) {
+      const next = pickRandomPublicRemixPromptTemplate(
+        currentTemplateId,
+        () => 0,
+        recentTemplateIds
+      );
+
+      if (!next) {
+        throw new Error("Expected another prompt template.");
+      }
+
+      expect(next.id).not.toBe(currentTemplateId);
+      selectedTemplates.push(next);
+      recentTemplateIds = [...recentTemplateIds.slice(-1), next.id];
+      currentTemplateId = next.id;
+    }
+
+    for (let index = 2; index < selectedTemplates.length; index += 1) {
+      const recentKinds = selectedTemplates
+        .slice(index - 2, index + 1)
+        .map((template) => template.kind);
+
+      expect(new Set(recentKinds).size).toBeGreaterThan(1);
+    }
+
+    expect(selectedTemplates.some((template) => template.kind === "choice")).toBe(
+      true
+    );
+    expect(selectedTemplates.some((template) => template.kind === "image")).toBe(
+      true
+    );
+  });
+
+  it.each([
+    {
+      currentTemplateId: "choice-material",
+      recentTemplateIds: ["choice-style", "choice-material"],
+      expectedKind: "image"
+    },
+    {
+      currentTemplateId: "image-animal-dance",
+      recentTemplateIds: ["image-environment", "image-animal-dance"],
+      expectedKind: "choice"
+    }
+  ] as const)(
+    "forces a $expectedKind prompt after two prompts of the other type",
+    ({ currentTemplateId, recentTemplateIds, expectedKind }) => {
+      const next = pickRandomPublicRemixPromptTemplate(
+        currentTemplateId,
+        () => 0,
+        recentTemplateIds
+      );
+
+      expect(next?.kind).toBe(expectedKind);
+      expect(next?.id).not.toBe(currentTemplateId);
+    }
+  );
 });

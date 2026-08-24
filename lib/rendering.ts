@@ -27,6 +27,11 @@ import {
   isVideoModelId,
   type VideoModelId
 } from "@/lib/video-models";
+import {
+  composeVideoPrompt,
+  providerCrowdReferenceRequirement,
+  providerOpeningFrameContinuityRequirement
+} from "@/lib/video-prompt-budget";
 
 const geminiInteractionsUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const geminiApiRevision = "2026-05-20";
@@ -39,6 +44,7 @@ type StartRenderInput = {
   sourceVideoId?: string | null;
   sourceVideoUrl?: string | null;
   imageReferenceUrl?: string | null;
+  openingFrameImageUrl?: string | null;
   remixReferenceImageUrl?: string | null;
   runwayApiKey?: string | null;
   geminiApiKey?: string | null;
@@ -181,6 +187,44 @@ function getGeminiRecoveryTimeoutMs(renderJob: {
 
 const remoteMediaDownloadTimeoutMs = 8_000;
 
+function ensureOpeningFramePrompt(
+  prompt: string,
+  openingFrameAttached: boolean,
+  crowdReferenceAttached: boolean
+) {
+  if (
+    !openingFrameAttached ||
+    prompt.trimStart().startsWith(providerOpeningFrameContinuityRequirement)
+  ) {
+    return prompt;
+  }
+
+  return composeVideoPrompt({
+    leadingRequirements: [
+      providerOpeningFrameContinuityRequirement,
+      crowdReferenceAttached ? providerCrowdReferenceRequirement : null
+    ],
+    context: [prompt],
+    requirements: []
+  });
+}
+
+function buildGeminiRemixPrompt(
+  prompt: string,
+  openingFrameAttached: boolean,
+  crowdReferenceAttached: boolean
+) {
+  if (openingFrameAttached || !crowdReferenceAttached) {
+    return prompt;
+  }
+
+  return [
+    "REFERENCE IMAGE: Image 1 is the crowd photo (<IMAGE_REF_0>), not an opening-frame anchor.",
+    "Treat references to the attached photo, image, or picture as references to <IMAGE_REF_0>.",
+    prompt
+  ].join(" ");
+}
+
 function isRetryableGeminiReconciliationError(error: unknown) {
   if (isVideoModerationError(error)) {
     return false;
@@ -202,12 +246,19 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
     throw new Error(`Unsupported video model: ${requestedVideoModel}`);
   }
 
+  const providerPrompt = ensureOpeningFramePrompt(
+    input.prompt,
+    Boolean(input.mode === "remix" && input.openingFrameImageUrl),
+    Boolean(input.mode === "remix" && input.remixReferenceImageUrl)
+  );
+
   if (input.runwayApiKey) {
     const started = await startRunwayVideoRender({
       mode: input.mode,
-      prompt: input.prompt,
+      prompt: providerPrompt,
       sourceVideoUrl: input.sourceVideoUrl,
       imageReferenceUrl: input.imageReferenceUrl,
+      openingFrameImageUrl: input.openingFrameImageUrl,
       remixReferenceImageUrl: input.remixReferenceImageUrl,
       apiKey: input.runwayApiKey,
       durationSeconds: input.durationSeconds,
@@ -277,43 +328,14 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
   // Omni-generated videos should be edited statefully. Google retains the full
   // prior video context under the interaction ID, avoiding uploaded-video limits.
   if (input.mode === "remix" && statefulSourceId) {
-    const referenceImage = input.remixReferenceImageUrl
-      ? await fetchRemoteMedia(
-          input.remixReferenceImageUrl,
-          "image/jpeg",
-          "crowd reference image"
-        )
-      : null;
-    const remixPrompt = referenceImage
-      ? [
-          "The attached crowd photo is <IMAGE_REF_0>.",
-          "Treat references to the photo, image, or picture in the crowd request as references to <IMAGE_REF_0>.",
-          "Use it as visual guidance for this edit of the previously generated video.",
-          input.prompt
-        ].join(" ")
-      : input.prompt;
-
-    requestBody.previous_interaction_id = statefulSourceId;
-    requestBody.input = referenceImage
-      ? [
-          {
-            type: "image",
-            data: referenceImage.data,
-            mime_type: referenceImage.mimeType
-          },
-          {
-            type: "text",
-            text: remixPrompt
-          }
-        ]
-      : remixPrompt;
-  } else if (input.mode === "remix" && input.sourceVideoUrl) {
-    const [sourceVideo, referenceImage] = await Promise.all([
-      fetchRemoteMedia(
-        input.sourceVideoUrl,
-        "video/mp4",
-        "source video"
-      ),
+    const [openingFrameImage, crowdReferenceImage] = await Promise.all([
+      input.openingFrameImageUrl
+        ? fetchRemoteMedia(
+            input.openingFrameImageUrl,
+            "image/jpeg",
+            "opening-frame image"
+          )
+        : Promise.resolve(null),
       input.remixReferenceImageUrl
         ? fetchRemoteMedia(
             input.remixReferenceImageUrl,
@@ -322,14 +344,59 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
           )
         : Promise.resolve(null)
     ]);
-    const remixPrompt = referenceImage
+    const referenceImages = [openingFrameImage, crowdReferenceImage].filter(
+      (image): image is NonNullable<typeof image> => image !== null
+    );
+    const remixPrompt = buildGeminiRemixPrompt(
+      providerPrompt,
+      Boolean(openingFrameImage),
+      Boolean(crowdReferenceImage)
+    );
+
+    requestBody.previous_interaction_id = statefulSourceId;
+    requestBody.input = referenceImages.length > 0
       ? [
-          "The attached crowd photo is <IMAGE_REF_0>.",
-          "Treat references to the photo, image, or picture in the crowd request as references to <IMAGE_REF_0>.",
-          "Use it as visual guidance for the requested transformation while editing the attached source video.",
-          input.prompt
-        ].join(" ")
-      : input.prompt;
+          ...referenceImages.map((image) => ({
+            type: "image",
+            data: image.data,
+            mime_type: image.mimeType
+          })),
+          {
+            type: "text",
+            text: remixPrompt
+          }
+        ]
+      : remixPrompt;
+  } else if (input.mode === "remix" && input.sourceVideoUrl) {
+    const [sourceVideo, openingFrameImage, crowdReferenceImage] = await Promise.all([
+      fetchRemoteMedia(
+        input.sourceVideoUrl,
+        "video/mp4",
+        "source video"
+      ),
+      input.openingFrameImageUrl
+        ? fetchRemoteMedia(
+            input.openingFrameImageUrl,
+            "image/jpeg",
+            "opening-frame image"
+          )
+        : Promise.resolve(null),
+      input.remixReferenceImageUrl
+        ? fetchRemoteMedia(
+            input.remixReferenceImageUrl,
+            "image/jpeg",
+            "crowd reference image"
+          )
+        : Promise.resolve(null)
+    ]);
+    const referenceImages = [openingFrameImage, crowdReferenceImage].filter(
+      (image): image is NonNullable<typeof image> => image !== null
+    );
+    const remixPrompt = buildGeminiRemixPrompt(
+      providerPrompt,
+      Boolean(openingFrameImage),
+      Boolean(crowdReferenceImage)
+    );
 
     requestBody.input = [
       {
@@ -340,15 +407,11 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
             data: sourceVideo.data,
             mime_type: sourceVideo.mimeType
           },
-          ...(referenceImage
-            ? [
-                {
-                  type: "image",
-                  data: referenceImage.data,
-                  mime_type: referenceImage.mimeType
-                }
-              ]
-            : []),
+          ...referenceImages.map((image) => ({
+            type: "image",
+            data: image.data,
+            mime_type: image.mimeType
+          })),
           {
             type: "text",
             text: remixPrompt
@@ -376,7 +439,7 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
       },
       {
         type: "text",
-        text: input.prompt
+        text: providerPrompt
       }
     ];
     requestBody.generation_config = {
@@ -385,7 +448,7 @@ export async function startVideoRender(input: StartRenderInput): Promise<Started
       }
     };
   } else {
-    requestBody.input = input.prompt;
+    requestBody.input = providerPrompt;
     requestBody.generation_config = {
       video_config: {
         task: "text_to_video"
@@ -728,6 +791,7 @@ export async function reconcileRenderJob(renderJobId: string) {
     const completed = await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
       publicUrl: saved.publicUrl,
       storagePath: saved.storagePath,
+      thumbnailUrl: saved.thumbnailUrl,
       sourceVideoId: interaction.id ?? renderJob.providerRequestId
     });
 
@@ -979,6 +1043,7 @@ async function reconcileRunwayRenderJob(
         {
           publicUrl: saved.publicUrl,
           storagePath: saved.storagePath,
+          thumbnailUrl: saved.thumbnailUrl,
           sourceVideoId: providerRequestId
         }
       );
@@ -1293,6 +1358,7 @@ export async function completeGeminiVideoRender(
   const completed = await markRenderJobReady(renderJob.id, renderJob.outputAsset.id, {
     publicUrl: saved.publicUrl,
     storagePath: saved.storagePath,
+    thumbnailUrl: saved.thumbnailUrl,
     sourceVideoId: providerRequestId
   });
 
@@ -1328,6 +1394,7 @@ async function markRenderJobReady(
   input: {
     publicUrl: string;
     storagePath: string | null;
+    thumbnailUrl?: string | null;
     sourceVideoId: string;
   }
 ) {
@@ -1384,6 +1451,11 @@ async function markRenderJobReady(
         status: "ready",
         publicUrl: input.publicUrl,
         storagePath: input.storagePath,
+        ...(input.thumbnailUrl !== undefined
+          ? {
+              thumbnailUrl: input.thumbnailUrl
+            }
+          : {}),
         sourceVideoId: input.sourceVideoId
       }
     });

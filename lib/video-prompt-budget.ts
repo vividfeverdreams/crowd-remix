@@ -2,6 +2,7 @@ export const videoProviderPromptCharacterBudget = 1_000;
 export const assessedVideoPromptCharacterBudget = 900;
 
 type ComposeVideoPromptInput = {
+  leadingRequirements?: readonly (string | null | undefined)[];
   context: readonly (string | null | undefined)[];
   requirements: readonly (string | null | undefined)[];
   maxLength?: number;
@@ -12,6 +13,8 @@ type ComposeFinalProviderVideoPromptInput = {
   motionRules?: string | null;
   includeArtistMotionRules: boolean;
   venueSafeMode: boolean;
+  openingFrameAttached?: boolean;
+  crowdReferenceAttached?: boolean;
 };
 
 export const providerCameraContinuityRequirement =
@@ -22,12 +25,18 @@ export const providerSeamlessLoopRequirement =
   "Reconnect ending to opening seamlessly as a continuous loop.";
 export const providerVenueSafetyRequirement =
   "Venue-safe: no real people/public figures, copyrighted characters, logos/readable text, explicit content/graphic violence, or hazardous imagery.";
+export const providerOpeningFrameContinuityRequirement =
+  "START FRAME: <FIRST_FRAME> is Image 1, the prior video's exact final frame. Use it unchanged as frame 0—same composition, subjects, camera, lighting, color, and motion state—then continue its motion.";
+export const providerCrowdReferenceRequirement =
+  "Image 2 is crowd-photo guidance <IMAGE_REF_0> only. Nothing later overrides the frame-0 anchor.";
 
 /**
  * Fits provider-bound prompt context around clauses that must survive intact.
- * Requirements stay at the end of the prompt and only context may be shortened.
+ * Leading requirements stay at the start, trailing requirements stay at the
+ * end, and only context may be shortened.
  */
 export function composeVideoPrompt({
+  leadingRequirements = [],
   context,
   requirements,
   maxLength = videoProviderPromptCharacterBudget
@@ -36,41 +45,64 @@ export function composeVideoPrompt({
     throw new RangeError("Video prompt maxLength must be a positive integer.");
   }
 
+  const leadingRequirementText = joinPromptSegments(leadingRequirements);
   const contextText = joinPromptSegments(context);
   const requirementText = joinPromptSegments(requirements);
+  const fixedText = joinPromptSegments([
+    leadingRequirementText,
+    requirementText
+  ]);
 
-  if (requirementText.length > maxLength) {
+  if (fixedText.length > maxLength) {
     throw new RangeError(
       `Required video prompt clauses exceed the ${maxLength}-character budget.`
     );
   }
 
-  if (!requirementText) {
+  if (!fixedText) {
     return truncatePromptContext(contextText, maxLength);
   }
 
-  const contextBudget = maxLength - requirementText.length - 1;
+  const separatorCount =
+    (leadingRequirementText ? 1 : 0) + (requirementText ? 1 : 0);
+  const contextBudget =
+    maxLength -
+    leadingRequirementText.length -
+    requirementText.length -
+    separatorCount;
 
   if (!contextText || contextBudget < 1) {
-    return requirementText;
+    return fixedText;
   }
 
   const retainedContext = truncatePromptContext(contextText, contextBudget);
 
-  return retainedContext
-    ? `${retainedContext} ${requirementText}`
-    : requirementText;
+  return joinPromptSegments([
+    leadingRequirementText,
+    retainedContext,
+    requirementText
+  ]);
 }
 
 export function composeFinalProviderVideoPrompt({
   creativePrompt,
   motionRules,
   includeArtistMotionRules,
-  venueSafeMode
+  venueSafeMode,
+  openingFrameAttached = false,
+  crowdReferenceAttached = false
 }: ComposeFinalProviderVideoPromptInput) {
   const normalizedRules = normalizePromptSegment(motionRules ?? "");
 
   return composeVideoPrompt({
+    leadingRequirements: openingFrameAttached
+      ? [
+          providerOpeningFrameContinuityRequirement,
+          crowdReferenceAttached
+            ? providerCrowdReferenceRequirement
+            : null
+        ]
+      : [],
     context: [creativePrompt],
     requirements: [
       includeArtistMotionRules && normalizedRules

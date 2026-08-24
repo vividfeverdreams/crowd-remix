@@ -4,6 +4,8 @@ import {
   composeVideoPrompt,
   providerArtistCameraPriorityRequirement,
   providerCameraContinuityRequirement,
+  providerCrowdReferenceRequirement,
+  providerOpeningFrameContinuityRequirement,
   providerSeamlessLoopRequirement,
   providerVenueSafetyRequirement,
   videoProviderPromptCharacterBudget
@@ -36,6 +38,39 @@ describe("video prompt budget composition", () => {
         maxLength: 100
       })
     ).toThrow("Required video prompt clauses exceed the 100-character budget.");
+  });
+
+  it("keeps the attached closing-frame instruction at character zero under truncation", () => {
+    const prompt = composeFinalProviderVideoPrompt({
+      creativePrompt: "Hostile optional context. ".repeat(100),
+      motionRules: "Keep motion fluid",
+      includeArtistMotionRules: true,
+      venueSafeMode: true,
+      openingFrameAttached: true,
+      crowdReferenceAttached: true
+    });
+
+    expect(prompt.startsWith(providerOpeningFrameContinuityRequirement)).toBe(
+      true
+    );
+    expect(prompt).toContain(providerCrowdReferenceRequirement);
+    expect(prompt).toContain(providerSeamlessLoopRequirement);
+    expect(prompt.length).toBeLessThanOrEqual(
+      videoProviderPromptCharacterBudget
+    );
+  });
+
+  it("does not claim an opening image is attached when none is available", () => {
+    const prompt = composeFinalProviderVideoPrompt({
+      creativePrompt: "Continue the luminous architecture.",
+      includeArtistMotionRules: false,
+      venueSafeMode: false,
+      openingFrameAttached: false,
+      crowdReferenceAttached: true
+    });
+
+    expect(prompt).not.toContain(providerOpeningFrameContinuityRequirement);
+    expect(prompt).not.toContain(providerCrowdReferenceRequirement);
   });
 
   it("does not split a UTF-16 surrogate pair at the context boundary", () => {

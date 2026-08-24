@@ -2,25 +2,36 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  getAvailableStandbyVideoSlot,
   getVideoSlotPresentation,
   requestVideoPlayback,
-  ShowScreen
+  ShowScreen,
+  subtleVideoCrossfadeMilliseconds
 } from "@/components/show-screen";
 import type { SessionSnapshot } from "@/lib/snapshot";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 describe("show screen video presentation", () => {
-  it("switches video layers without a compositor opacity transition", () => {
+  it("keeps the outgoing final frame visible beneath a subtle incoming fade", () => {
+    expect(subtleVideoCrossfadeMilliseconds).toBe(200);
     expect(getVideoSlotPresentation(true)).toEqual({
       visibility: "visible",
+      opacity: 1,
       zIndex: 2
     });
     expect(getVideoSlotPresentation(false)).toEqual({
       visibility: "hidden",
+      opacity: 0,
       zIndex: 1
     });
-    expect(getVideoSlotPresentation(true)).not.toHaveProperty("opacity");
+    expect(getVideoSlotPresentation(false, true)).toEqual({
+      visibility: "visible",
+      opacity: 1,
+      zIndex: 1
+    });
+    expect(getAvailableStandbyVideoSlot(1, 0)).toBeNull();
+    expect(getAvailableStandbyVideoSlot(1, null)).toBe(0);
   });
 
   it("recognizes playback starting even if the play promise remains pending", async () => {
@@ -106,7 +117,9 @@ describe("show screen video presentation", () => {
     expect(markup).not.toContain('autoplay=""');
     expect(markup).not.toContain(' loop=""');
     const videoMarkup = markup.match(/<video[^>]*><\/video>/)?.[0] ?? "";
-    expect(videoMarkup).not.toContain("transition-opacity");
+    expect(videoMarkup).toContain("transition-opacity");
+    expect(videoMarkup).toContain("duration-200");
+    expect(videoMarkup).toContain("motion-reduce:transition-none");
     expect(videoMarkup).not.toContain("translateZ(0)");
     expect(markup).toContain("Nova");
     expect(markup).toContain("Chrome clouds melt over the dance floor");

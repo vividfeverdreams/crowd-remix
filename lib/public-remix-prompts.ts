@@ -30,6 +30,7 @@ export type ResolvedPublicRemixPrompt = {
 
 const responseModifierCount = 5;
 const responseRootCount = 10;
+const maximumConsecutiveTemplateKindCount = 2;
 
 function createChoiceResponses(
   templateId: string,
@@ -656,15 +657,30 @@ export function sampleWithoutReplacement<T>(
 
 export function pickRandomPublicRemixPromptTemplate(
   currentTemplateId?: string | null,
-  random: () => number = Math.random
+  random: () => number = Math.random,
+  recentTemplateIds: readonly string[] = []
 ) {
   const candidates = currentTemplateId
     ? publicRemixPromptTemplates.filter(
         (template) => template.id !== currentTemplateId
       )
     : publicRemixPromptTemplates;
+  const recentTemplates = recentTemplateIds
+    .slice(-maximumConsecutiveTemplateKindCount)
+    .map((templateId) => getPublicRemixPromptTemplate(templateId))
+    .filter((template): template is PublicRemixPromptTemplate => Boolean(template));
+  const repeatedKind =
+    recentTemplates.length === maximumConsecutiveTemplateKindCount &&
+    recentTemplates.every(
+      (template) => template.kind === recentTemplates[0]?.kind
+    )
+      ? recentTemplates[0]?.kind
+      : null;
+  const balancedCandidates = repeatedKind
+    ? candidates.filter((template) => template.kind !== repeatedKind)
+    : candidates;
 
-  return sampleWithoutReplacement(candidates, 1, random)[0] ?? null;
+  return sampleWithoutReplacement(balancedCandidates, 1, random)[0] ?? null;
 }
 
 export function pickRandomChoiceResponses(

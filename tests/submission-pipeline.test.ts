@@ -118,6 +118,8 @@ import {
 import {
   providerArtistCameraPriorityRequirement,
   providerCameraContinuityRequirement,
+  providerCrowdReferenceRequirement,
+  providerOpeningFrameContinuityRequirement,
   providerSeamlessLoopRequirement,
   providerVenueSafetyRequirement
 } from "@/lib/video-prompt-budget";
@@ -452,6 +454,7 @@ describe("submission render queue", () => {
             id: true,
             promptText: true,
             publicUrl: true,
+            thumbnailUrl: true,
             sourceVideoId: true,
             status: true
           }
@@ -486,6 +489,7 @@ describe("submission render queue", () => {
         promptText: "Current chrome canyon prompt",
         sourceVideoId: "v1_remix-2",
         publicUrl: "https://example.com/remix-2.mp4",
+        thumbnailUrl: "https://example.com/remix-2-closing-frame.jpg",
         status: "archived"
       }
     });
@@ -516,7 +520,7 @@ describe("submission render queue", () => {
     });
     mocks.findSubmission.mockResolvedValue({
       rawText: "Make it bloom into paper planets",
-      referenceImageUrl: null
+      referenceImageUrl: "https://example.com/crowd-photo.jpg"
     });
     mocks.createAsset.mockResolvedValue({ id: "asset-remix-3" });
     mocks.createJob.mockResolvedValue({ id: "render-remix-3" });
@@ -556,6 +560,12 @@ describe("submission render queue", () => {
     ).prompt;
 
     expect(directedPrompt).toHaveLength(900);
+    expect(
+      finalProviderPrompt.startsWith(
+        providerOpeningFrameContinuityRequirement
+      )
+    ).toBe(true);
+    expect(finalProviderPrompt).toContain(providerCrowdReferenceRequirement);
     expect(finalProviderPrompt).toContain("crowd-requested locked static camera");
     expect(finalProviderPrompt).toContain(
       "fast clockwise orbit despite conflicting crowd camera direction"
@@ -584,6 +594,9 @@ describe("submission render queue", () => {
     });
     expect(mocks.startVideoRender).toHaveBeenCalledWith(
       expect.objectContaining({
+        openingFrameImageUrl:
+          "https://example.com/remix-2-closing-frame.jpg",
+        remixReferenceImageUrl: "https://example.com/crowd-photo.jpg",
         prompt: finalProviderPrompt
       })
     );

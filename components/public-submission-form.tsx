@@ -94,6 +94,7 @@ export function PublicSubmissionForm({
   });
   const imageInputRef = useRef<HTMLInputElement>(null);
   const imagePreviewUrlRef = useRef<string | null>(null);
+  const recentTemplateIdsRef = useRef<string[]>([]);
   const participantBanned = trackedStatus?.state === "banned";
   const activeTemplate = activeTemplateId
     ? getPublicRemixPromptTemplate(activeTemplateId)
@@ -133,7 +134,9 @@ export function PublicSubmissionForm({
   }, []);
 
   useEffect(() => {
-    showRandomTemplate(null);
+    if (recentTemplateIdsRef.current.length === 0) {
+      showRandomTemplate(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -160,12 +163,20 @@ export function PublicSubmissionForm({
 
   function showRandomTemplate(currentTemplateId: string | null) {
     const nextTemplate =
-      pickRandomPublicRemixPromptTemplate(currentTemplateId);
+      pickRandomPublicRemixPromptTemplate(
+        currentTemplateId,
+        Math.random,
+        recentTemplateIdsRef.current
+      );
 
     if (!nextTemplate) {
       return;
     }
 
+    recentTemplateIdsRef.current = [
+      ...recentTemplateIdsRef.current.slice(-1),
+      nextTemplate.id
+    ];
     setActiveTemplateId(nextTemplate.id);
     setSelectedResponseId(null);
     setVisibleChoiceResponses(

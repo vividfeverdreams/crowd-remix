@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ValidatedSubmissionImage } from "@/lib/submission-image";
+import { extractVideoClosingFrameJpeg } from "@/lib/video-closing-frame";
 
 const demoLoopUrl = process.env.DEMO_LOOP_URL ?? "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
 
@@ -33,9 +34,45 @@ export async function persistVideoAsset(assetId: string, data: Buffer) {
     throw new Error(`Supabase storage upload failed (${response.status}): ${await response.text()}`);
   }
 
+  let thumbnailUrl: string | null = null;
+
+  try {
+    const closingFrame = await extractVideoClosingFrameJpeg(data);
+    const closingFrameObjectPath = `closing-frames/${assetId}.jpg`;
+    const closingFrameResponse = await fetch(
+      `${supabaseUrl}/storage/v1/object/${bucket}/${closingFrameObjectPath}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Content-Type": "image/jpeg",
+          "x-upsert": "true"
+        },
+        body: new Uint8Array(closingFrame)
+      }
+    );
+
+    if (!closingFrameResponse.ok) {
+      throw new Error(
+        `Supabase closing-frame upload failed (${closingFrameResponse.status}): ${await closingFrameResponse.text()}`
+      );
+    }
+
+    thumbnailUrl = `${supabaseUrl}/storage/v1/object/public/${bucket}/${closingFrameObjectPath}`;
+  } catch (error) {
+    // A missing handoff still should not discard an otherwise valid completed
+    // render. The next remix falls back to ordinary video-to-video continuity.
+    console.warn("[video-continuity] closing frame could not be persisted", {
+      assetId,
+      reason: error instanceof Error ? error.message : "unknown_error"
+    });
+  }
+
   return {
     storagePath: `${bucket}/${objectPath}`,
-    publicUrl: `${supabaseUrl}/storage/v1/object/public/${bucket}/${objectPath}`
+    publicUrl: `${supabaseUrl}/storage/v1/object/public/${bucket}/${objectPath}`,
+    thumbnailUrl
   };
 }
 

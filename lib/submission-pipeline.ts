@@ -486,6 +486,7 @@ export async function queueAutomatedRender(
                     id: true,
                     promptText: true,
                     publicUrl: true,
+                    thumbnailUrl: true,
                     sourceVideoId: true,
                     status: true
                   },
@@ -674,11 +675,19 @@ export async function queueAutomatedRender(
     mode === "seed" ||
     submissionId === null ||
     session.artistControlEnabled !== false;
+  const openingFrameImageUrl =
+    mode === "remix" ? sourceAsset?.thumbnailUrl ?? null : null;
+  const crowdReferenceImageUrl =
+    mode === "remix" ? sourceSubmission?.referenceImageUrl ?? null : null;
   const providerPrompt = composeFinalProviderVideoPrompt({
     creativePrompt: directedPrompt,
     motionRules: session.motionRules,
     includeArtistMotionRules,
-    venueSafeMode: session.venueSafeMode !== false
+    venueSafeMode: session.venueSafeMode !== false,
+    openingFrameAttached: Boolean(openingFrameImageUrl),
+    crowdReferenceAttached: Boolean(
+      openingFrameImageUrl && crowdReferenceImageUrl
+    )
   });
 
   try {
@@ -728,10 +737,8 @@ export async function queueAutomatedRender(
       sourceVideoId: sourceAsset?.sourceVideoId,
       sourceVideoUrl: sourceAsset?.publicUrl,
       imageReferenceUrl: session.imageReferenceUrl,
-      remixReferenceImageUrl:
-        mode === "remix"
-          ? sourceSubmission?.referenceImageUrl
-          : null,
+      openingFrameImageUrl,
+      remixReferenceImageUrl: crowdReferenceImageUrl,
       runwayApiKey: env.runwayApiSecret,
       geminiApiKey,
       videoModel,

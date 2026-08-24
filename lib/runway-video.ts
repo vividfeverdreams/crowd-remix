@@ -51,6 +51,7 @@ export type StartRunwayVideoRenderInput = {
   prompt: string;
   sourceVideoUrl?: string | null;
   imageReferenceUrl?: string | null;
+  openingFrameImageUrl?: string | null;
   remixReferenceImageUrl?: string | null;
   apiKey: string;
   durationSeconds?: number | null;
@@ -183,10 +184,16 @@ export async function startRunwayVideoRender(
       input.sourceVideoUrl,
       "source video"
     );
-    const referenceUri = optionalAssetUri(
-      input.remixReferenceImageUrl,
-      "video keyframe reference"
-    );
+    const referenceUris = [
+      optionalAssetUri(
+        input.openingFrameImageUrl,
+        "opening-frame image"
+      ),
+      optionalAssetUri(
+        input.remixReferenceImageUrl,
+        "crowd reference image"
+      )
+    ].filter((uri): uri is string => uri !== null);
 
     endpoint = "video_to_video";
     strategy = "runway_video_to_video";
@@ -195,7 +202,7 @@ export async function startRunwayVideoRender(
       sourceVideoUri,
       promptText,
       duration,
-      referenceUri
+      referenceUris
     });
   } else {
     const promptImage = optionalAssetUri(
@@ -294,15 +301,11 @@ function buildVideoToVideoBody(input: {
   sourceVideoUri: string;
   promptText: string;
   duration: number;
-  referenceUri: string | null;
+  referenceUris: readonly string[];
 }): Record<string, unknown> {
-  const references = input.referenceUri
+  const references = input.referenceUris.length > 0
     ? {
-        references: [
-          {
-            uri: input.referenceUri
-          }
-        ]
+        references: input.referenceUris.map((uri) => ({ uri }))
       }
     : {};
 

@@ -9,6 +9,7 @@ import {
   RunwayApiError,
   startRunwayVideoRender
 } from "@/lib/runway-video";
+import { providerOpeningFrameContinuityRequirement } from "@/lib/video-prompt-budget";
 
 const taskId = "497f6eca-6276-4993-bfeb-53cbbbba6f08";
 const apiKey = "test-runway-key";
@@ -150,6 +151,37 @@ describe("Runway video adapter", () => {
     expect(body).not.toHaveProperty("duration");
     expect(body).not.toHaveProperty("ratio");
     expect(body.references[0]).not.toHaveProperty("type");
+  });
+
+  it("orders the prior closing frame before the crowd reference image", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(taskCreatedResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const prompt = `${providerOpeningFrameContinuityRequirement} Evolve into an ultraviolet cathedral.`;
+
+    await startRunwayVideoRender({
+      mode: "remix",
+      prompt,
+      sourceVideoUrl: "https://example.com/source.mp4",
+      openingFrameImageUrl: "https://example.com/closing-frame.jpg",
+      remixReferenceImageUrl: "https://example.com/crowd-photo.jpg",
+      apiKey,
+      durationSeconds: 10
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(request.body));
+
+    expect(body.promptText.startsWith(providerOpeningFrameContinuityRequirement)).toBe(
+      true
+    );
+    expect(body.references).toEqual([
+      {
+        uri: "https://example.com/closing-frame.jpg"
+      },
+      {
+        uri: "https://example.com/crowd-photo.jpg"
+      }
+    ]);
   });
 
   it("clamps overlong prompts and uses the default model duration", async () => {
