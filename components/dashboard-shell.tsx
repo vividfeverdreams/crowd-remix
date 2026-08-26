@@ -17,6 +17,7 @@ import {
   getVideoModelDefinition,
   normalizeVideoModelId
 } from "@/lib/video-models";
+import { getVideoModerationDiagnosticLabel } from "@/lib/video-moderation";
 
 type DashboardShellProps = {
   initialSnapshot: NonNullable<SessionSnapshot>;
@@ -1242,6 +1243,14 @@ export function DashboardShell({
                     {job.status === "failed" && job.failureReason ? (
                       <p className="mt-3 text-sm leading-6 text-ember">
                         {job.failureReason}
+                      </p>
+                    ) : null}
+                    {job.status === "failed" && job.moderationDiagnostic ? (
+                      <p className="mt-2 text-xs leading-5 text-ember/80">
+                        Provider diagnostic:{" "}
+                        {getVideoModerationDiagnosticLabel(
+                          job.moderationDiagnostic
+                        )}
                       </p>
                     ) : null}
                   </div>

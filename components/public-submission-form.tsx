@@ -33,6 +33,7 @@ type TrackedSubmissionStatus = {
     | "ready"
     | "live"
     | "played"
+    | "provider-blocked"
     | "rejected"
     | "retrying"
     | "submitted";
@@ -51,6 +52,7 @@ const terminalStates = new Set<TrackedSubmissionStatus["state"]>([
   "blocked",
   "live",
   "played",
+  "provider-blocked",
   "rejected"
 ]);
 const participantDeviceStorageKey = "dream-sequence:participant-device";
@@ -771,7 +773,7 @@ function createBannedTrackedStatus(
     detail:
       payload?.error ??
       payload?.message ??
-      "Three video-moderation blocks have locked this device out until the live sequence ends.",
+      "Three blocked reference images have locked this device out until the live sequence ends.",
     prompt,
     moderationBlockCount: payload?.moderationBlockCount ?? 3,
     blocksRemaining: 0,
@@ -789,6 +791,7 @@ function renderSubmissionSteps(state: TrackedSubmissionStatus["state"]) {
       case "retrying":
       case "blocked":
       case "banned":
+      case "provider-blocked":
       case "rejected":
         return 1;
       case "queued":
@@ -827,6 +830,7 @@ function getStatusChipClassName(state: TrackedSubmissionStatus["state"]) {
     case "rejected":
     case "blocked":
     case "banned":
+    case "provider-blocked":
       return "border border-ember/35 bg-ember/12 text-ember";
     default:
       return "border border-white/10 bg-white/[0.03] text-white/72";

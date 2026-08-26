@@ -75,6 +75,7 @@ vi.mock("@/lib/rendering", () => ({
   completeGeminiVideoRender: mocks.completeGeminiVideoRender,
   failRenderJob: mocks.failRenderJob,
   formatVideoModerationFailureReason: (message: string) => message,
+  getVideoProviderFailureCode: () => null,
   isVideoModerationError: vi.fn().mockReturnValue(false),
   reconcileRenderJob: mocks.reconcileRenderJob,
   startVideoRender: mocks.startVideoRender

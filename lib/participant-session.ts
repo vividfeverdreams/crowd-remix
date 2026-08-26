@@ -1,12 +1,15 @@
 import { db } from "@/lib/db";
 
 export const participantModerationBanThreshold = 3;
-const participantModerationEventPrefix = "participant.media_moderation_block.";
-const legacyVideoModerationEventPrefix = "participant.video_moderation_block.";
-const legacyGrokModerationEventPrefix = "participant.grok_moderation_block.";
+export const participantImageModerationEventSummary =
+  "Counted a participant image-moderation block";
+const participantInputModerationEventPrefix =
+  "participant.input_moderation_block.";
+const legacyMediaModerationEventPrefix =
+  "participant.media_moderation_block.";
 
 export function getParticipantModerationEventType(senderFingerprint: string) {
-  return `${participantModerationEventPrefix}${senderFingerprint}`;
+  return `${participantInputModerationEventPrefix}${senderFingerprint}`;
 }
 
 export async function getParticipantModerationBlockCount(
@@ -16,13 +19,15 @@ export async function getParticipantModerationBlockCount(
   return db.auditEvent.count({
     where: {
       sessionId,
-      type: {
-        in: [
-          getParticipantModerationEventType(senderFingerprint),
-          `${legacyVideoModerationEventPrefix}${senderFingerprint}`,
-          `${legacyGrokModerationEventPrefix}${senderFingerprint}`
-        ]
-      }
+      OR: [
+        {
+          type: getParticipantModerationEventType(senderFingerprint)
+        },
+        {
+          type: `${legacyMediaModerationEventPrefix}${senderFingerprint}`,
+          summary: participantImageModerationEventSummary
+        }
+      ]
     }
   });
 }

@@ -499,7 +499,8 @@ describe("Gemini Omni video requests", () => {
       },
       data: {
         status: "failed",
-        failureReason: expect.stringContaining(videoModerationBlockedReason),
+        failureReason: videoModerationBlockedReason,
+        providerFailureCode: "SAFETY.INPUT.TEXT",
         lastPolledAt: expect.any(Date)
       }
     });
@@ -512,6 +513,167 @@ describe("Gemini Omni video requests", () => {
       }
     });
     expect(testDoubles.persistVideoAsset).not.toHaveBeenCalled();
+  });
+
+  it("uses a Gemini safety code when a completed interaction has no video", async () => {
+    const createdAt = new Date();
+
+    testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
+      "test-gemini-key"
+    );
+    testDoubles.db.renderJob.findUnique
+      .mockResolvedValueOnce({
+        id: "render-gemini-safety",
+        sessionId: "session-1",
+        submissionId: null,
+        providerRequestId: "v1_gemini-safety",
+        providerOutputUri: null,
+        providerStrategy: "stateful_edit",
+        status: "in_progress",
+        createdAt,
+        outputAsset: {
+          id: "asset-gemini-safety"
+        },
+        session: {
+          userId: "user-1",
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: "asset-current"
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        id: "render-gemini-safety",
+        outputAssetId: "asset-gemini-safety",
+        submissionId: null,
+        sessionId: "session-1",
+        status: "in_progress",
+        submission: null
+      });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "v1_gemini-safety",
+            status: "completed",
+            error: {
+              code: 400,
+              status: "SAFETY.OUTPUT.VIDEO",
+              message: "Generation did not return a usable video."
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+    );
+
+    await expect(
+      reconcileRenderJob("render-gemini-safety")
+    ).resolves.toEqual({
+      status: "failed",
+      progress: null
+    });
+
+    expect(testDoubles.transaction.renderJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "render-gemini-safety",
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "failed",
+        failureReason: videoModerationBlockedReason,
+        providerFailureCode: "SAFETY.OUTPUT.VIDEO",
+        lastPolledAt: expect.any(Date)
+      }
+    });
+    expect(testDoubles.recordAuditEvent).not.toHaveBeenCalled();
+    expect(testDoubles.db.auditEvent.count).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an explicit Gemini moderation response through the event stream", async () => {
+    testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
+      "test-gemini-key"
+    );
+    testDoubles.db.renderJob.findUnique
+      .mockResolvedValueOnce({
+        id: "render-gemini-http-safety",
+        sessionId: "session-1",
+        submissionId: null,
+        providerRequestId: "v1_gemini-http-safety",
+        providerOutputUri: null,
+        providerStrategy: "stateful_edit",
+        status: "in_progress",
+        createdAt: new Date(),
+        outputAsset: {
+          id: "asset-gemini-http-safety"
+        },
+        session: {
+          userId: "user-1",
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: "asset-current"
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        id: "render-gemini-http-safety",
+        outputAssetId: "asset-gemini-http-safety",
+        submissionId: null,
+        sessionId: "session-1",
+        status: "in_progress",
+        submission: null
+      });
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 400,
+            status: "SAFETY.INPUT.IMAGE",
+            message: "The request could not be completed."
+          }
+        }),
+        {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      reconcileRenderJob("render-gemini-http-safety")
+    ).resolves.toEqual({
+      status: "failed",
+      progress: null
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(testDoubles.transaction.renderJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "render-gemini-http-safety",
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "failed",
+        failureReason: videoModerationBlockedReason,
+        providerFailureCode: "SAFETY.INPUT.IMAGE",
+        lastPolledAt: expect.any(Date)
+      }
+    });
   });
 
   it("keeps the demo fallback active until a Gemini key is configured", async () => {
@@ -1565,6 +1727,102 @@ describe("Gemini Omni video requests", () => {
     );
   });
 
+  it("preserves a moderation code returned by the Gemini event-stream fallback", async () => {
+    testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
+      "test-gemini-key"
+    );
+    testDoubles.db.renderJob.findUnique
+      .mockResolvedValueOnce({
+        id: "render-stream-safety",
+        sessionId: "session-1",
+        submissionId: null,
+        providerRequestId: "v1_stream-safety",
+        providerOutputUri: null,
+        providerStrategy: "stateful_edit",
+        status: "in_progress",
+        createdAt: new Date(),
+        outputAsset: {
+          id: "asset-stream-safety"
+        },
+        session: {
+          userId: "user-1",
+          playbackState: {
+            id: "playback-1",
+            currentAssetId: "asset-current"
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        id: "render-stream-safety",
+        outputAssetId: "asset-stream-safety",
+        submissionId: null,
+        sessionId: "session-1",
+        status: "in_progress",
+        submission: null
+      });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              status: "INVALID_ARGUMENT",
+              message: "Use the event stream for this interaction."
+            }
+          }),
+          {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              status: "SAFETY.OUTPUT.VIDEO",
+              message: "The request could not be completed."
+            }
+          }),
+          {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json"
+            }
+          }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      reconcileRenderJob("render-stream-safety")
+    ).resolves.toEqual({
+      status: "failed",
+      progress: null
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(testDoubles.transaction.renderJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "render-stream-safety",
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "failed",
+        failureReason: videoModerationBlockedReason,
+        providerFailureCode: "SAFETY.OUTPUT.VIDEO",
+        lastPolledAt: expect.any(Date)
+      }
+    });
+  });
+
   it("retires a stale invalid interaction so the queue can retry it", async () => {
     testDoubles.getEffectiveGeminiApiKeyForUser.mockResolvedValue(
       "test-gemini-key"
@@ -1738,7 +1996,7 @@ describe("Gemini Omni video requests", () => {
     expect(testDoubles.persistVideoAsset).not.toHaveBeenCalled();
   });
 
-  it("rejects the blocked web submission and records one session-scoped strike", async () => {
+  it("rejects a provider-blocked web render without penalizing the participant", async () => {
     testDoubles.db.renderJob.findUnique.mockResolvedValue({
       id: "render-1",
       outputAssetId: "asset-1",
@@ -1750,17 +2008,31 @@ describe("Gemini Omni video requests", () => {
         senderFingerprint: "device-hash"
       }
     });
-    testDoubles.db.auditEvent.count.mockResolvedValue(3);
-
     await expect(
       failRenderJob("render-1", videoModerationBlockedReason, {
-        moderationBlocked: true
+        moderationBlocked: true,
+        providerFailureCode: "SAFETY.INPUT.IMAGE"
       })
     ).resolves.toEqual({
       failed: true,
       changed: true,
-      moderationBlockCount: 3,
-      banned: true
+      moderationBlockCount: 0,
+      banned: false
+    });
+
+    expect(testDoubles.transaction.renderJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "render-1",
+        status: {
+          in: ["queued", "in_progress"]
+        }
+      },
+      data: {
+        status: "failed",
+        failureReason: videoModerationBlockedReason,
+        providerFailureCode: "SAFETY.INPUT.IMAGE",
+        lastPolledAt: expect.any(Date)
+      }
     });
 
     expect(testDoubles.transaction.promptSubmission.update).toHaveBeenCalledWith({
@@ -1773,12 +2045,8 @@ describe("Gemini Omni video requests", () => {
         approvalReason: videoModerationBlockedReason
       }
     });
-    expect(testDoubles.recordAuditEvent).toHaveBeenCalledWith({
-      type: "participant.media_moderation_block.device-hash",
-      summary: "Counted a participant video-moderation block",
-      details: "render-1",
-      sessionId: "session-1"
-    });
+    expect(testDoubles.recordAuditEvent).not.toHaveBeenCalled();
+    expect(testDoubles.db.auditEvent.count).not.toHaveBeenCalled();
   });
 
   it("does not count the same failed render twice", async () => {

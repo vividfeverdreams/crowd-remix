@@ -2,11 +2,6 @@ import { recordAuditEvent } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { getEffectiveGeminiApiKeyForUser } from "@/lib/google-key-store";
-import {
-  getParticipantModerationBlockCount,
-  getParticipantModerationEventType,
-  isParticipantBanned
-} from "@/lib/participant-session";
 import { promoteOldestReadyAsset } from "@/lib/playback-queue";
 import { estimateVideoRenderProgress } from "@/lib/render-progress";
 import { recordRenderJobProgress } from "@/lib/render-progress-state";
@@ -32,6 +27,17 @@ import {
   providerCrowdReferenceRequirement,
   providerOpeningFrameContinuityRequirement
 } from "@/lib/video-prompt-budget";
+import {
+  getVideoModerationDiagnostic,
+  isVideoModerationFailureReason,
+  normalizeProviderFailureCode,
+  videoModerationBlockedReason
+} from "@/lib/video-moderation";
+
+export {
+  isVideoModerationFailureReason,
+  videoModerationBlockedReason
+} from "@/lib/video-moderation";
 
 const geminiInteractionsUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const geminiApiRevision = "2026-05-20";
@@ -124,13 +130,6 @@ type GeminiInteractionStreamEvent = {
   } | null;
 };
 
-export const videoModerationBlockedReason =
-  "The video provider blocked this render during moderation.";
-const legacyGeminiModerationBlockedReason =
-  "Gemini Omni blocked this render during video moderation.";
-const legacyGrokModerationBlockedReason =
-  "Grok Imagine blocked this render during video moderation.";
-
 class GeminiVideoApiError extends Error {
   code: string | null;
   moderationBlocked: boolean;
@@ -160,18 +159,22 @@ export function isVideoModerationError(error: unknown) {
   );
 }
 
-export function isVideoModerationFailureReason(
-  failureReason: string | null | undefined
-) {
-  return Boolean(
-    failureReason &&
-      [
-        videoModerationBlockedReason,
-        legacyGeminiModerationBlockedReason,
-        legacyGrokModerationBlockedReason
-      ].some(
-        (reason) => failureReason === reason || failureReason.startsWith(`${reason} `)
-      )
+export function getVideoProviderFailureCode(error: unknown) {
+  if (error instanceof RunwayApiError || error instanceof GeminiVideoApiError) {
+    return normalizeProviderFailureCode(error.code);
+  }
+
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const providerError = error as {
+    code?: unknown;
+    failureCode?: unknown;
+  };
+
+  return normalizeProviderFailureCode(
+    providerError.failureCode ?? providerError.code
   );
 }
 
@@ -714,7 +717,8 @@ export async function reconcileRenderJob(renderJobId: string) {
         ? formatVideoModerationFailureReason(failureReason)
         : failureReason,
       {
-        moderationBlocked
+        moderationBlocked,
+        providerFailureCode: getVideoProviderFailureCode(error)
       }
     );
     const failed = Boolean(failureResult && failureResult.failed);
@@ -804,7 +808,11 @@ export async function reconcileRenderJob(renderJobId: string) {
 
   if (interaction.status === "completed") {
     const providerError = getInteractionFailureMessage(interaction);
-    const moderationBlocked = isVideoModerationFailure(null, providerError);
+    const providerFailureCode = getInteractionFailureCode(interaction);
+    const moderationBlocked = isVideoModerationFailure(
+      providerFailureCode,
+      providerError
+    );
 
     const failureResult = await failRenderJob(
       renderJob.id,
@@ -812,7 +820,8 @@ export async function reconcileRenderJob(renderJobId: string) {
         ? formatVideoModerationFailureReason(providerError)
         : providerError || "Gemini Omni completed without returning a video.",
       {
-        moderationBlocked
+        moderationBlocked,
+        providerFailureCode
       }
     );
     const failed = Boolean(failureResult && failureResult.failed);
@@ -833,8 +842,9 @@ export async function reconcileRenderJob(renderJobId: string) {
     interaction.status === "requires_action"
   ) {
     const providerError = getInteractionFailureMessage(interaction);
+    const providerFailureCode = getInteractionFailureCode(interaction);
     const moderationBlocked = isVideoModerationFailure(
-      interaction.error?.code,
+      providerFailureCode,
       providerError
     );
 
@@ -845,7 +855,8 @@ export async function reconcileRenderJob(renderJobId: string) {
         : providerError ||
             `Gemini Omni reported a ${interaction.status.replaceAll("_", " ")} render.`,
       {
-        moderationBlocked
+        moderationBlocked,
+        providerFailureCode
       }
     );
     const failed = Boolean(failureResult && failureResult.failed);
@@ -947,7 +958,8 @@ async function reconcileRunwayRenderJob(
         ? formatVideoModerationFailureReason(failureReason)
         : failureReason,
       {
-        moderationBlocked
+        moderationBlocked,
+        providerFailureCode: getVideoProviderFailureCode(error)
       }
     );
 
@@ -1077,9 +1089,10 @@ async function reconcileRunwayRenderJob(
   }
 
   const providerMessage = task.failure?.trim();
-  const moderationBlocked =
-    task.failureCode?.startsWith("SAFETY") ||
-    isVideoModerationFailure(task.failureCode, providerMessage);
+  const moderationBlocked = isVideoModerationFailure(
+    task.failureCode,
+    providerMessage
+  );
   const failureReason =
     providerMessage ||
     `Runway reported a ${task.status.toLowerCase()} render${
@@ -1091,7 +1104,8 @@ async function reconcileRunwayRenderJob(
       ? formatVideoModerationFailureReason(failureReason)
       : failureReason,
     {
-      moderationBlocked
+      moderationBlocked,
+      providerFailureCode: task.failureCode
     }
   );
 
@@ -1142,6 +1156,7 @@ export async function failRenderJob(
   failureReason: string,
   options: {
     moderationBlocked?: boolean;
+    providerFailureCode?: string | null;
     forceRetry?: boolean;
   } = {}
 ) {
@@ -1154,13 +1169,7 @@ export async function failRenderJob(
       outputAssetId: true,
       submissionId: true,
       sessionId: true,
-      status: true,
-      submission: {
-        select: {
-          source: true,
-          senderFingerprint: true
-        }
-      }
+      status: true
     }
   });
 
@@ -1195,6 +1204,9 @@ export async function failRenderJob(
     Boolean(renderJob.submissionId) &&
     previousFailureCount >= 1;
 
+  const providerFailureCode = normalizeProviderFailureCode(
+    options.providerFailureCode
+  );
   const failureClaimed = await db.$transaction(async (tx: any) => {
     const failureClaim = await tx.renderJob.updateMany({
       where: {
@@ -1206,6 +1218,7 @@ export async function failRenderJob(
       data: {
         status: "failed",
         failureReason,
+        providerFailureCode,
         lastPolledAt: new Date()
       }
     });
@@ -1258,40 +1271,19 @@ export async function failRenderJob(
     };
   }
 
-  let moderationBlockCount = 0;
-
-  if (
-    options.moderationBlocked &&
-    renderJob.submission?.source === "web" &&
-    renderJob.submission.senderFingerprint
-  ) {
-    const senderFingerprint = renderJob.submission.senderFingerprint;
-
-    await recordAuditEvent({
-      type: getParticipantModerationEventType(senderFingerprint),
-      summary: "Counted a participant video-moderation block",
-      details: renderJob.id,
-      sessionId: renderJob.sessionId
-    });
-
-    moderationBlockCount = await getParticipantModerationBlockCount(
-      renderJob.sessionId,
-      senderFingerprint
-    );
-
-    console.info("[participant-moderation] counted video-moderation block", {
+  if (options.moderationBlocked) {
+    console.warn("[render-job] provider moderation blocked render", {
       sessionId: renderJob.sessionId,
       renderJobId: renderJob.id,
-      moderationBlockCount,
-      banned: isParticipantBanned(moderationBlockCount)
+      providerFailureCode
     });
   }
 
   return {
     failed: true,
     changed: true,
-    moderationBlockCount,
-    banned: isParticipantBanned(moderationBlockCount)
+    moderationBlockCount: 0,
+    banned: false
   };
 }
 
@@ -1533,35 +1525,7 @@ async function callGeminiVideoApi<T>(url: string, apiKey: string, init?: Request
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    let parsedCode: string | null = null;
-    let parsedProviderMessage: string | null = null;
-
-    try {
-      const parsed = JSON.parse(errorText) as {
-        error?: {
-          message?: string;
-          code?: string | number | null;
-          status?: string | null;
-        };
-      };
-
-      parsedProviderMessage = parsed.error?.message?.trim() ?? null;
-      parsedCode = String(parsed.error?.status ?? parsed.error?.code ?? "").trim() || null;
-    } catch {
-      // Fall through to the plain-text response below.
-    }
-
-    const providerMessage = parsedProviderMessage || errorText.trim();
-    const message = providerMessage
-      ? `Gemini video request failed: ${providerMessage}${parsedCode ? ` (${parsedCode})` : ""}`
-      : `Gemini video request failed with ${response.status}`;
-
-    throw new GeminiVideoApiError(message, {
-      code: parsedCode,
-      moderationBlocked: isVideoModerationFailure(parsedCode, providerMessage),
-      status: response.status
-    });
+    throw await createGeminiVideoApiError(response);
   }
 
   return (await response.json()) as T;
@@ -1576,7 +1540,11 @@ async function retrieveGeminiVideoInteraction(
   try {
     return await callGeminiVideoApi<GeminiInteraction>(url, apiKey);
   } catch (error) {
-    if (!(error instanceof GeminiVideoApiError) || error.status !== 400) {
+    if (
+      !(error instanceof GeminiVideoApiError) ||
+      error.status !== 400 ||
+      error.moderationBlocked
+    ) {
       throw error;
     }
 
@@ -1605,14 +1573,7 @@ async function streamGeminiVideoInteraction(url: string, apiKey: string) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new GeminiVideoApiError(
-        errorText.trim() ||
-          `Gemini video event stream failed with ${response.status}`,
-        {
-          status: response.status
-        }
-      );
+      throw await createGeminiVideoApiError(response);
     }
 
     if (!response.body) {
@@ -1872,10 +1833,56 @@ function getInteractionFailureMessage(interaction: GeminiInteraction) {
   return null;
 }
 
+function getInteractionFailureCode(interaction: GeminiInteraction) {
+  return normalizeProviderFailureCode(
+    interaction.error?.status ?? interaction.error?.code
+  );
+}
+
+async function createGeminiVideoApiError(response: Response) {
+  const errorText = await response.text();
+  let parsedCode: string | null = null;
+  let parsedProviderMessage: string | null = null;
+
+  try {
+    const parsed = JSON.parse(errorText) as {
+      error?: {
+        message?: string;
+        code?: string | number | null;
+        status?: string | null;
+      };
+    };
+
+    parsedProviderMessage = parsed.error?.message?.trim() ?? null;
+    parsedCode = normalizeProviderFailureCode(
+      parsed.error?.status ?? parsed.error?.code
+    );
+  } catch {
+    // Fall through to the plain-text response below.
+  }
+
+  const providerMessage = parsedProviderMessage || errorText.trim();
+  const message = providerMessage
+    ? `Gemini video request failed: ${providerMessage}${parsedCode ? ` (${parsedCode})` : ""}`
+    : `Gemini video request failed with ${response.status}`;
+
+  return new GeminiVideoApiError(message, {
+    code: parsedCode,
+    moderationBlocked: isVideoModerationFailure(parsedCode, providerMessage),
+    status: response.status
+  });
+}
+
 function isVideoModerationFailure(
-  _code: string | number | null | undefined,
+  code: string | number | null | undefined,
   message: string | null | undefined
 ) {
+  if (
+    getVideoModerationDiagnostic(normalizeProviderFailureCode(code)) !== null
+  ) {
+    return true;
+  }
+
   if (!message) {
     return false;
   }
@@ -1887,7 +1894,8 @@ function isVideoModerationFailure(
   );
 }
 
-export function formatVideoModerationFailureReason(providerMessage?: string | null) {
-  const detail = providerMessage?.trim();
-  return detail ? `${videoModerationBlockedReason} ${detail}` : videoModerationBlockedReason;
+export function formatVideoModerationFailureReason(
+  _providerMessage?: string | null
+) {
+  return videoModerationBlockedReason;
 }

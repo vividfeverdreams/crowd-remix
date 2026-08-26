@@ -32,6 +32,10 @@ vi.mock("@/lib/show-overlay-state", () => ({
 
 import { getSessionSnapshot } from "@/lib/snapshot";
 import { maximumEstimatedVideoProgress } from "@/lib/render-progress";
+import {
+  videoModerationBlockedReason,
+  videoProviderFailureReason
+} from "@/lib/video-moderation";
 
 describe("client session snapshots", () => {
   beforeEach(() => {
@@ -137,7 +141,8 @@ describe("client session snapshots", () => {
           mode: "remix",
           status: "in_progress",
           promptText: "Add violet lightning",
-          failureReason: null,
+          failureReason: `${videoModerationBlockedReason} Raw provider detail must stay private.`,
+          providerFailureCode: "SAFETY.INPUT.IMAGE",
           createdAt,
           providerRequestId: "interaction-private",
           providerOutputUri: "provider-uri-private",
@@ -146,6 +151,16 @@ describe("client session snapshots", () => {
             senderFingerprint: "render-device-hash-private",
             messageSid: "SM-render-private"
           }
+        },
+        {
+          id: "render-2",
+          mode: "remix",
+          status: "failed",
+          promptText: "Turn the skyline into liquid chrome",
+          failureReason:
+            "Gemini video request failed: Raw invalid argument detail. (INVALID_ARGUMENT)",
+          providerFailureCode: "INVALID_ARGUMENT",
+          createdAt
         }
       ],
       visualAssets: [smsAsset, webAsset],
@@ -165,6 +180,16 @@ describe("client session snapshots", () => {
     expect(snapshot?.session.renderJobs[0]?.progress).toBe(
       maximumEstimatedVideoProgress
     );
+    expect(snapshot?.session.renderJobs[0]?.moderationDiagnostic).toBe(
+      "input_image"
+    );
+    expect(snapshot?.session.renderJobs[0]?.failureReason).toBe(
+      videoModerationBlockedReason
+    );
+    expect(snapshot?.session.renderJobs[1]?.moderationDiagnostic).toBeNull();
+    expect(snapshot?.session.renderJobs[1]?.failureReason).toBe(
+      videoProviderFailureReason
+    );
 
     const serialized = JSON.stringify(snapshot);
 
@@ -176,6 +201,11 @@ describe("client session snapshots", () => {
     expect(serialized).not.toContain("SM-private");
     expect(serialized).not.toContain("providerRequestId");
     expect(serialized).not.toContain("providerOutputUri");
+    expect(serialized).not.toContain("providerFailureCode");
+    expect(serialized).not.toContain("SAFETY.INPUT.IMAGE");
+    expect(serialized).not.toContain("Raw provider detail must stay private");
+    expect(serialized).not.toContain("Raw invalid argument detail");
+    expect(serialized).not.toContain("INVALID_ARGUMENT");
     expect(serialized).not.toContain("interaction-private");
     expect(serialized).not.toContain("provider-uri-private");
     expect(serialized).not.toContain("moderationResult");
@@ -187,5 +217,9 @@ describe("client session snapshots", () => {
     expect(query.include.submissions.select).not.toHaveProperty("messageSid");
     expect(query.include.renderJobs.select).not.toHaveProperty("submission");
     expect(query.include.renderJobs.select).not.toHaveProperty("providerRequestId");
+    expect(query.include.renderJobs.select).toHaveProperty(
+      "providerFailureCode",
+      true
+    );
   });
 });

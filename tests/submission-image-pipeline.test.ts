@@ -70,8 +70,10 @@ vi.mock("@/lib/participant-session", () => ({
   getParticipantModerationBlockCount:
     mocks.getParticipantModerationBlockCount,
   getParticipantModerationEventType: (fingerprint: string) =>
-    `participant.media_moderation_block.${fingerprint}`,
+    `participant.input_moderation_block.${fingerprint}`,
   isParticipantBanned: (count: number) => count >= 3,
+  participantImageModerationEventSummary:
+    "Counted a participant image-moderation block",
   participantModerationBanThreshold: 3
 }));
 
@@ -90,6 +92,7 @@ vi.mock("@/lib/playback-queue", () => ({
 vi.mock("@/lib/rendering", () => ({
   failRenderJob: vi.fn(),
   formatVideoModerationFailureReason: (message: string) => message,
+  getVideoProviderFailureCode: () => null,
   isVideoModerationError: () => false,
   reconcileRenderJob: vi.fn(),
   startVideoRender: vi.fn()
@@ -140,7 +143,7 @@ describe("image moderation in the submission pipeline", () => {
       .mockResolvedValueOnce(3);
   });
 
-  it("discards a blocked image and locks the device on its third shared strike", async () => {
+  it("discards a blocked image and locks the device on its third image strike", async () => {
     const result = await ingestSubmission({
       sessionCode: "LIVE01",
       source: "web",
@@ -173,7 +176,7 @@ describe("image moderation in the submission pipeline", () => {
     expect(mocks.recordAuditEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: expect.stringMatching(
-          /^participant\.media_moderation_block\./
+          /^participant\.input_moderation_block\./
         ),
         summary: "Counted a participant image-moderation block"
       })

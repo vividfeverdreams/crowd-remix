@@ -4,8 +4,12 @@ import {
   getParticipantModerationBlockCount,
   isParticipantBanned
 } from "@/lib/participant-session";
-import { isVideoModerationFailureReason } from "@/lib/rendering";
 import { isImageModerationFailureReason } from "@/lib/image-moderation";
+import {
+  getVideoModerationDiagnostic,
+  getVideoModerationDiagnosticLabel,
+  isVideoModerationFailureReason
+} from "@/lib/video-moderation";
 
 export type PublicSubmissionState =
   | "approved"
@@ -16,6 +20,7 @@ export type PublicSubmissionState =
   | "ready"
   | "live"
   | "played"
+  | "provider-blocked"
   | "rejected"
   | "retrying"
   | "submitted";
@@ -72,10 +77,10 @@ export async function getPublicSubmissionStatus(sessionCode: string, submissionI
     })
   )[0];
 
-  const mediaModerationBlocked =
-    isVideoModerationFailureReason(renderJob?.failureReason) ||
-    isImageModerationFailureReason(submission.approvalReason);
-  const moderationBlockCount = mediaModerationBlocked
+  const intakeImageBlocked = isImageModerationFailureReason(
+    submission.approvalReason
+  );
+  const moderationBlockCount = intakeImageBlocked
     ? await getParticipantModerationBlockCount(
         String(session.id),
         String(submission.senderFingerprint)
@@ -104,7 +109,6 @@ function describeSubmissionStatus(
   ).trim();
 
   if (
-    isVideoModerationFailureReason(renderJob?.failureReason) ||
     isImageModerationFailureReason(submission.approvalReason)
   ) {
     const banned = isParticipantBanned(moderationBlockCount);
@@ -114,16 +118,32 @@ function describeSubmissionStatus(
       state: banned ? "banned" : "blocked",
       title: banned
         ? "Device locked for this sequence"
-        : "Image or video blocked by safety moderation",
+        : "Reference image blocked by safety moderation",
       detail: banned
-        ? "This was the third image or video moderation block, so this device cannot submit again until this live sequence ends."
-        : `The media safety filter blocked this submission. ${blocksRemaining} ${
+        ? "This was the third reference image blocked by intake moderation, so this device cannot submit again until this live sequence ends."
+        : `The image safety filter blocked this submission. ${blocksRemaining} ${
             blocksRemaining === 1 ? "block" : "blocks"
           } remaining before this device is locked for this live sequence.`,
       prompt,
       referenceImageUrl,
       moderationBlockCount,
       blocksRemaining,
+      submittedAt,
+      updatedAt
+    };
+  }
+
+  if (isVideoModerationFailureReason(renderJob?.failureReason)) {
+    const diagnostic =
+      getVideoModerationDiagnostic(renderJob?.providerFailureCode) ??
+      "provider_safety";
+
+    return {
+      state: "provider-blocked",
+      title: "Video provider could not render this remix",
+      detail: `${getVideoModerationDiagnosticLabel(diagnostic)} This provider-side failure did not count against your device.`,
+      prompt,
+      referenceImageUrl,
       submittedAt,
       updatedAt
     };

@@ -6,6 +6,12 @@ import {
   renderProgressEventPrefix
 } from "@/lib/render-progress-state";
 import { getShowOverlaySettings, showOverlayEventTypes } from "@/lib/show-overlay-state";
+import {
+  getVideoModerationDiagnostic,
+  isVideoModerationFailureReason,
+  videoModerationBlockedReason,
+  videoProviderFailureReason
+} from "@/lib/video-moderation";
 
 const clientSourceSubmissionSelect = {
   rawText: true,
@@ -77,6 +83,7 @@ export async function getSessionSnapshot(sessionId: string) {
           status: true,
           promptText: true,
           failureReason: true,
+          providerFailureCode: true,
           createdAt: true
         },
         orderBy: {
@@ -146,7 +153,14 @@ export async function getSessionSnapshot(sessionId: string) {
       mode: job.mode,
       status: job.status,
       promptText: job.promptText,
-      failureReason: job.failureReason,
+      failureReason: isVideoModerationFailureReason(job.failureReason)
+        ? videoModerationBlockedReason
+        : job.status === "failed" && job.failureReason
+          ? videoProviderFailureReason
+          : job.failureReason,
+      moderationDiagnostic: getVideoModerationDiagnostic(
+        job.providerFailureCode
+      ),
       createdAt: job.createdAt,
       progress
     };

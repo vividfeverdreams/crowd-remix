@@ -148,26 +148,27 @@ model VisualAsset {
 }
 
 model RenderJob {
-  id                String            @id @default(cuid())
-  sessionId         String
-  submissionId      String?
-  sourceAssetId     String?
-  outputAssetId     String?           @unique
-  mode              String
-  status            String            @default("queued")
-  providerRequestId String?           @unique @map("openaiVideoId")
-  providerOutputUri String?
-  providerStrategy  String?
-  promptText        String
-  failureReason     String?
-  lastPolledAt      DateTime?
-  completedAt       DateTime?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  session           DJSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  submission        PromptSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
-  sourceAsset       VisualAsset?      @relation("RenderSource", fields: [sourceAssetId], references: [id], onDelete: SetNull)
-  outputAsset       VisualAsset?      @relation("RenderOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
+  id                  String            @id @default(cuid())
+  sessionId           String
+  submissionId        String?
+  sourceAssetId       String?
+  outputAssetId       String?           @unique
+  mode                String
+  status              String            @default("queued")
+  providerRequestId   String?           @unique @map("openaiVideoId")
+  providerOutputUri   String?
+  providerStrategy    String?
+  promptText          String
+  failureReason       String?
+  providerFailureCode String?
+  lastPolledAt        DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  session             DJSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  submission          PromptSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  sourceAsset         VisualAsset?      @relation("RenderSource", fields: [sourceAssetId], references: [id], onDelete: SetNull)
+  outputAsset         VisualAsset?      @relation("RenderOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
 
   @@index([sessionId, status])
   @@schema("dream_sequence")

@@ -167,7 +167,7 @@ The input is analyzed locally with the Web Audio API and is never connected to b
 - Supabase Postgres is the source of truth in both development and production; the app does not rely on a serverless filesystem.
 - Rendered videos are uploaded to Supabase Storage and served from the configured public bucket.
 - Runway video tasks are polled until they succeed or fail. Successful output URLs are ephemeral, so reconciliation downloads each MP4 into Supabase Storage before exposing it to playback.
-- Audience photos are limited to supported image formats, verified by file signature, screened with multimodal moderation before storage, and counted alongside video moderation toward the three-strike device lockout for that live session.
+- Audience photos are limited to supported image formats, verified by file signature, and screened with multimodal moderation before storage. Only images independently rejected at intake count toward the three-strike device lockout for that live session; downstream video-provider moderation failures are recorded as render diagnostics and never penalize the participant.
 - Each completed remix is persisted and its public MP4 URL becomes the source for the next Runway video-to-video task.
 
 ## Testing

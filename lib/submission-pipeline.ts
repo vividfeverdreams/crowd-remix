@@ -13,6 +13,7 @@ import {
   completeGeminiVideoRender,
   failRenderJob,
   formatVideoModerationFailureReason,
+  getVideoProviderFailureCode,
   isVideoModerationError,
   reconcileRenderJob,
   startVideoRender
@@ -28,6 +29,7 @@ import {
   getParticipantModerationEventType,
   getParticipantBlocksRemaining,
   isParticipantBanned,
+  participantImageModerationEventSummary,
   participantModerationBanThreshold
 } from "@/lib/participant-session";
 import { persistSubmissionImage } from "@/lib/storage";
@@ -129,7 +131,7 @@ export async function ingestSubmission(input: IntakeInput) {
     if (isParticipantBanned(moderationBlockCount)) {
       return {
         status: "banned" as const,
-        message: `This device is locked out for the rest of this live sequence after ${participantModerationBanThreshold} media-moderation blocks.`,
+        message: `This device is locked out for the rest of this live sequence after ${participantModerationBanThreshold} blocked reference images.`,
         moderationBlockCount
       };
     }
@@ -246,7 +248,7 @@ export async function ingestSubmission(input: IntakeInput) {
   if (imageRejected) {
     await recordAuditEvent({
       type: getParticipantModerationEventType(senderFingerprint),
-      summary: "Counted a participant image-moderation block",
+      summary: participantImageModerationEventSummary,
       details: `${participantImageModerationBlockedReason} ${imageAssessment.flags.join(", ")}`,
       sessionId: session.id
     });
@@ -262,7 +264,7 @@ export async function ingestSubmission(input: IntakeInput) {
     return {
       status: banned ? ("banned" as const) : ("rejected" as const),
       message: banned
-        ? "This was the third blocked image or video, so this device is locked for the rest of the live sequence."
+        ? "This was the third blocked reference image, so this device is locked for the rest of the live sequence."
         : `That photo did not pass venue-safe image moderation. ${blocksRemaining} ${
             blocksRemaining === 1 ? "strike" : "strikes"
           } remaining before this device is locked.`,
@@ -748,6 +750,7 @@ export async function queueAutomatedRender(
     const failureReason =
       error instanceof Error ? error.message : "Render could not be started.";
     const moderationBlocked = isVideoModerationError(error);
+    const providerFailureCode = getVideoProviderFailureCode(error);
 
     await failRenderJob(
       renderJob.id,
@@ -755,7 +758,8 @@ export async function queueAutomatedRender(
         ? formatVideoModerationFailureReason(failureReason)
         : failureReason,
       {
-        moderationBlocked
+        moderationBlocked,
+        providerFailureCode
       }
     );
 
@@ -764,7 +768,10 @@ export async function queueAutomatedRender(
       summary: moderationBlocked
         ? "Video provider moderation blocked a remix before rendering"
         : "Could not start a remix render",
-      details: failureReason,
+      details: JSON.stringify({
+        failureReason,
+        providerFailureCode
+      }),
       sessionId
     });
 

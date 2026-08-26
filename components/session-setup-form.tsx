@@ -505,7 +505,7 @@ export function SessionSetupForm() {
               <p id="submission-rate-limit-help" className="mt-2 text-sm leading-6 text-white/60">
                 {form.submissionRateLimitEnabled
                   ? `Each device can send up to ${form.submissionRateLimitCount} ${form.submissionRateLimitCount === 1 ? "remix" : "remixes"} within any ten-minute period.`
-                  : "Off: participants can submit as many remixes as they want. Video-safety moderation lockouts still apply separately."}
+                  : "Off: participants can submit as many remixes as they want. Reference images rejected at intake still count toward the separate device lockout."}
               </p>
             </div>
 
